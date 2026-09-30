@@ -7,7 +7,13 @@ from alembic import context
 
 from app.core.config import DATABASE_URL
 from app.db.base import Base
-from app.db.models import User
+from app.db.models import (
+    Project,
+    ProjectMember,
+    RefreshToken,
+    Task,
+    User,
+)
 
 
 # this is the Alembic Config object, which provides

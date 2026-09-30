@@ -1,7 +1,7 @@
-.venv/
 .env
-__pycache__/
-.pytest_cache/
-*.pyc
-Documents
 app.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+Documents
