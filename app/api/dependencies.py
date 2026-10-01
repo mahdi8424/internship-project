@@ -1,13 +1,12 @@
-from collections.abc import Callable
+import jwt
 
-from fastapi import HTTPException, status
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.jwt import decode_access_token
-from app.db.models import User, Project, ProjectMember, Task
+from app.db.models import Project, ProjectMember, Task, User
 from app.db.session import get_db
 
 
@@ -24,7 +23,7 @@ def get_current_user(
 
     try:
         payload = decode_access_token(token)
-    except Exception:
+    except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired access token",
@@ -114,6 +113,7 @@ def require_project_member(
 
     return current_user
 
+
 def require_project_owner(
     project_id: int,
     current_user: User = Depends(get_current_user),
@@ -137,6 +137,7 @@ def require_project_owner(
         )
 
     return current_user
+
 
 def require_task_access(
     project_id: int,

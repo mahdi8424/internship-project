@@ -1,7 +1,26 @@
+# Environment
 .env
-app.db
+.env.*
+
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
 .venv/
-Documents
+venv/
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Project-specific
+Documents/
