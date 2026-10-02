@@ -140,15 +140,22 @@ def require_project_owner(
 
 
 def require_task_access(
-    project_id: int,
     task_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> User:
+    task = db.get(Task, task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found",
+        )
+
     if current_user.role == "admin":
         return current_user
 
-    project = db.get(Project, project_id)
+    project = db.get(Project, task.project_id)
 
     if project is None:
         raise HTTPException(
@@ -161,7 +168,7 @@ def require_task_access(
 
     membership = db.scalar(
         select(ProjectMember).where(
-            ProjectMember.project_id == project_id,
+            ProjectMember.project_id == task.project_id,
             ProjectMember.user_id == current_user.id,
         )
     )
@@ -170,14 +177,6 @@ def require_task_access(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not a member of this project",
-        )
-
-    task = db.get(Task, task_id)
-
-    if task is None or task.project_id != project_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found",
         )
 
     return current_user

@@ -9,14 +9,23 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8)
     full_name: str | None = None
 
+UserRole = Literal["admin", "manager", "member"]
 
 class UserUpdate(BaseModel):
     full_name: str | None = Field(
         default=None,
         max_length=255,
     )
-    role: Literal["admin", "manager", "member"] | None = None
+    role: UserRole | None = None
     is_active: bool | None = None
+
+
+class UserRoleUpdate(BaseModel):
+    role: UserRole
+
+
+class UserStatusUpdate(BaseModel):
+    is_active: bool
 
 
 class UserResponse(BaseModel):

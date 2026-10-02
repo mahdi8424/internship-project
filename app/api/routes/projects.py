@@ -123,6 +123,26 @@ def update_project(
 
     return project
 
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_project(
+    project_id: int,
+    current_user: User = Depends(require_project_owner),
+    db: Session = Depends(get_db),
+):
+    project = db.get(Project, project_id)
+
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    db.delete(project)
+    db.commit()
+
 @router.post(
     "/{project_id}/members/{user_id}",
     status_code=status.HTTP_201_CREATED,

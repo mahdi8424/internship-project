@@ -1,13 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.auth.password import hash_password
+from app.auth.password import hash_password, verify_password
 from app.auth.jwt import create_access_token
 from app.auth.refresh import hash_refresh_token
 from app.db.models import RefreshToken, User
 from app.db.session import get_db
-from app.schemas import LoginRequest, TokenResponse, UserCreate, UserResponse, RefreshTokenRequest
+from app.schemas import (
+    LoginRequest, 
+    TokenResponse, 
+    UserCreate, 
+    UserResponse, 
+    UserUpdate, 
+    RefreshTokenRequest,
+    ChangePasswordRequest,
+)
+
+
 from app.services.auth_service import authenticate_user, create_tokens
 
 from app.api.dependencies import get_current_user
@@ -190,3 +200,42 @@ def get_me(
     current_user: User = Depends(get_current_user),
 ):
     return current_user
+
+@router.put("/me/password")
+def change_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(
+        data.current_password,
+        current_user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    current_user.password_hash = hash_password(
+        data.new_password
+    )
+
+    # Revoke all existing refresh tokens.
+    now = datetime.now(timezone.utc)
+
+    db.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.user_id == current_user.id,
+            RefreshToken.revoked_at.is_(None),
+        )
+        .values(
+            revoked_at=now
+        )
+    )
+
+    db.commit()
+
+    return {
+        "message": "Password changed successfully",
+    }

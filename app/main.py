@@ -6,7 +6,10 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.projects import router as projects_router
-from app.api.routes.tasks import router as tasks_router
+from app.api.routes.tasks import (
+    project_tasks_router,
+    tasks_router,
+)
 from app.api.routes.users import router as users_router
 from app.core.logging import setup_logging
 
@@ -60,5 +63,6 @@ async def unhandled_exception_handler(
 
 app.include_router(auth_router)
 app.include_router(projects_router)
+app.include_router(project_tasks_router)
 app.include_router(tasks_router)
 app.include_router(users_router)

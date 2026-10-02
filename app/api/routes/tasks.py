@@ -1,30 +1,31 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
-    get_current_user,
     require_project_member,
     require_task_access,
 )
-from app.db.models import (
-    Project,
-    ProjectMember,
-    Task,
-    User,
-)
+from app.db.models import Project, ProjectMember, Task, User
 from app.db.session import get_db
 from app.schemas import (
     TaskCreate,
     TaskResponse,
+    TaskStatusUpdate,
     TaskUpdate,
 )
 
 
-router = APIRouter(
+project_tasks_router = APIRouter(
     prefix="/projects/{project_id}/tasks",
     tags=["tasks"],
 )
+
+tasks_router = APIRouter(
+    prefix="/tasks",
+    tags=["tasks"],
+)
+
 
 def validate_assignee(
     db: Session,
@@ -55,7 +56,8 @@ def validate_assignee(
             detail="Assignee must be a member of the project",
         )
 
-@router.post(
+
+@project_tasks_router.post(
     "",
     response_model=TaskResponse,
     status_code=status.HTTP_201_CREATED,
@@ -95,12 +97,24 @@ def create_task(
 
     return task
 
-@router.get(
+
+@project_tasks_router.get(
     "",
     response_model=list[TaskResponse],
 )
 def list_tasks(
     project_id: int,
+    status_filter: str | None = Query(
+        default=None,
+        alias="status",
+    ),
+    assignee_id: int | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+    ),
     current_user: User = Depends(require_project_member),
     db: Session = Depends(get_db),
 ):
@@ -112,25 +126,42 @@ def list_tasks(
             detail="Project not found",
         )
 
-    return db.scalars(
-        select(Task)
-        .where(Task.project_id == project_id)
-        .order_by(Task.id)
-    ).all()
+    query = select(Task).where(
+        Task.project_id == project_id
+    )
 
-@router.get(
+    if status_filter is not None:
+        query = query.where(
+            Task.status == status_filter
+        )
+
+    if assignee_id is not None:
+        query = query.where(
+            Task.assignee_id == assignee_id
+        )
+
+    query = (
+        query
+        .order_by(Task.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+
+    return db.scalars(query).all()
+
+
+@tasks_router.get(
     "/{task_id}",
     response_model=TaskResponse,
 )
 def get_task(
-    project_id: int,
     task_id: int,
     current_user: User = Depends(require_task_access),
     db: Session = Depends(get_db),
 ):
     task = db.get(Task, task_id)
 
-    if task is None or task.project_id != project_id:
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found",
@@ -138,12 +169,12 @@ def get_task(
 
     return task
 
-@router.patch(
+
+@tasks_router.patch(
     "/{task_id}",
     response_model=TaskResponse,
 )
 def update_task(
-    project_id: int,
     task_id: int,
     data: TaskUpdate,
     current_user: User = Depends(require_task_access),
@@ -151,17 +182,10 @@ def update_task(
 ):
     task = db.get(Task, task_id)
 
-    if task is None or task.project_id != project_id:
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found",
-        )
-
-    if data.assignee_id is not None:
-        validate_assignee(
-            db,
-            project_id,
-            data.assignee_id,
         )
 
     updates = data.model_dump(exclude_unset=True)
@@ -169,43 +193,57 @@ def update_task(
     if "assignee_id" in updates:
         validate_assignee(
             db,
-            project_id,
+            task.project_id,
             updates["assignee_id"],
         )
 
     for field, value in updates.items():
         setattr(task, field, value)
 
-    if data.title is not None:
-        task.title = data.title
+    db.commit()
+    db.refresh(task)
 
-    if data.description is not None:
-        task.description = data.description
+    return task
 
-    if data.status is not None:
-        task.status = data.status
 
-    if data.assignee_id is not None:
-        task.assignee_id = data.assignee_id
+@tasks_router.patch(
+    "/{task_id}/status",
+    response_model=TaskResponse,
+)
+def update_task_status(
+    task_id: int,
+    data: TaskStatusUpdate,
+    current_user: User = Depends(require_task_access),
+    db: Session = Depends(get_db),
+):
+    task = db.get(Task, task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found",
+        )
+
+    task.status = data.status
 
     db.commit()
     db.refresh(task)
 
     return task
 
-@router.delete(
+
+@tasks_router.delete(
     "/{task_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_task(
-    project_id: int,
     task_id: int,
     current_user: User = Depends(require_task_access),
     db: Session = Depends(get_db),
 ):
     task = db.get(Task, task_id)
 
-    if task is None or task.project_id != project_id:
+    if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found",

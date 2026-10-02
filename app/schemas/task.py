@@ -23,9 +23,11 @@ class TaskUpdate(BaseModel):
 
     description: str | None = None
 
-    status: TaskStatus | None = None
-
     assignee_id: int | None = None
+
+
+class TaskStatusUpdate(BaseModel):
+    status: TaskStatus
 
 
 class TaskResponse(BaseModel):
