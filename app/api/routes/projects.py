@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -48,32 +48,54 @@ def create_project(
     response_model=list[ProjectResponse],
 )
 def list_projects(
+    page: int = Query(
+        default=1,
+        ge=1,
+    ),
+    page_size: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if current_user.role == "admin":
-        return db.scalars(
+        query = (
             select(Project)
-        ).all()
+            .order_by(Project.id)
+        )
+    else:
+        owned_projects = select(Project.id).where(
+            Project.owner_id == current_user.id
+        )
 
-    owned_projects = select(Project).where(
-        Project.owner_id == current_user.id
+        member_projects = (
+            select(Project.id)
+            .join(
+                ProjectMember,
+                ProjectMember.project_id == Project.id,
+            )
+            .where(
+                ProjectMember.user_id == current_user.id
+            )
+        )
+
+        project_ids = owned_projects.union(member_projects)
+
+        query = (
+            select(Project)
+            .where(Project.id.in_(project_ids))
+            .order_by(Project.id)
+        )
+
+    query = (
+        query
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
 
-    member_projects = (
-        select(Project)
-        .join(
-            ProjectMember,
-            ProjectMember.project_id == Project.id,
-        )
-        .where(
-            ProjectMember.user_id == current_user.id
-        )
-    )
-
-    return db.scalars(
-        owned_projects.union(member_projects)
-    ).all()
+    return db.scalars(query).all()
 
 @router.get(
     "/{project_id}",

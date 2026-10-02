@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,14 +23,25 @@ router = APIRouter(
     response_model=list[UserResponse],
 )
 def list_users(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+    ),
     current_user: User = Depends(
         require_roles("admin")
     ),
     db: Session = Depends(get_db),
 ):
-    return db.scalars(
-        select(User).order_by(User.id)
-    ).all()
+    query = (
+        select(User)
+        .order_by(User.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+
+    return db.scalars(query).all()
 
 
 @router.get(

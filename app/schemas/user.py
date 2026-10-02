@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class UserCreate(BaseModel):
     email: str
     password: str = Field(min_length=8)
-    full_name: str | None = None
+    full_name: str
 
 UserRole = Literal["admin", "manager", "member"]
 

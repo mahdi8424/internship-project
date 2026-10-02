@@ -4,7 +4,10 @@ from sqlalchemy.orm import Session
 
 from app.auth.password import hash_password, verify_password
 from app.auth.jwt import create_access_token
-from app.auth.refresh import hash_refresh_token
+from app.auth.refresh import (
+    generate_refresh_token,
+    hash_refresh_token,
+)
 from app.db.models import RefreshToken, User
 from app.db.session import get_db
 from app.schemas import (
@@ -12,7 +15,6 @@ from app.schemas import (
     TokenResponse, 
     UserCreate, 
     UserResponse, 
-    UserUpdate, 
     RefreshTokenRequest,
     ChangePasswordRequest,
 )
@@ -22,11 +24,10 @@ from app.services.auth_service import authenticate_user, create_tokens
 
 from app.api.dependencies import get_current_user
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from app.auth.refresh import generate_refresh_token
 from app.core.config import REFRESH_TOKEN_EXPIRE_DAYS
-from datetime import timedelta
+
 
 
 router = APIRouter(
@@ -129,7 +130,12 @@ def refresh(
             detail="Refresh token has been revoked",
         )
 
-    if token_record.expires_at <= now:
+    expires_at = token_record.expires_at
+
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at <= now:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token has expired",
