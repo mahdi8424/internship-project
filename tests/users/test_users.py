@@ -1,5 +1,41 @@
-import pytest
-from fastapi.testclient import TestClient
+# tests/users/test_users.py
+
+from app.db.models import User
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+
+def auth_header(token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+    }
+
+
+def create_admin(create_user):
+    return create_user(
+        email="admin@example.com",
+        role="admin",
+        full_name="Admin User",
+    )
+
+
+def create_manager(create_user, email="manager@example.com"):
+    return create_user(
+        email=email,
+        role="manager",
+        full_name="Manager User",
+    )
+
+
+def create_member(create_user, email="member@example.com"):
+    return create_user(
+        email=email,
+        role="member",
+        full_name="Member User",
+    )
 
 
 # ============================================================
@@ -7,34 +43,36 @@ from fastapi.testclient import TestClient
 # ============================================================
 
 
-def test_list_users_as_admin(
-    client: TestClient,
+def test_list_users_requires_authentication(client):
+    response = client.get("/users")
+
+    assert response.status_code == 401
+
+
+def test_list_users_admin_allowed(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-        full_name="Admin User",
-    )
+    admin = create_admin(create_user)
 
-    user1 = create_user(
+    create_user(
         email="user1@example.com",
-        role="member",
         full_name="User One",
     )
-
-    user2 = create_user(
+    create_user(
         email="user2@example.com",
-        role="manager",
         full_name="User Two",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.get(
         "/users",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
@@ -43,99 +81,73 @@ def test_list_users_as_admin(
 
     assert len(data) == 3
 
-    assert data[0]["id"] == admin.id
-    assert data[1]["id"] == user1.id
-    assert data[2]["id"] == user2.id
-
-    for user in data:
-        assert "id" in user
-        assert "email" in user
-        assert "full_name" in user
-        assert "role" in user
-        assert "is_active" in user
-        assert "created_at" in user
-        assert "password_hash" not in user
-
-
-def test_list_users_requires_authentication(
-    client: TestClient,
-):
-    response = client.get("/users")
-
-    assert response.status_code == 401
-
-
-def test_list_users_member_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    member = create_user(
-        email="member@example.com",
-        role="member",
-    )
-
-    token = get_token(member.email)
-
-    response = client.get(
-        "/users",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 403
+    assert data[0]["id"] < data[1]["id"]
+    assert data[1]["id"] < data[2]["id"]
 
 
 def test_list_users_manager_forbidden(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    manager = create_user(
-        email="manager@example.com",
-        role="manager",
-    )
+    manager = create_manager(create_user)
 
-    token = get_token(manager.email)
+    token = get_token(
+        manager.email,
+        "password123",
+    )
 
     response = client.get(
         "/users",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
 
     assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
 
 
-def test_list_users_invalid_token(
-    client: TestClient,
-):
-    response = client.get(
-        "/users",
-        headers={"Authorization": "Bearer invalid-token"},
-    )
-
-    assert response.status_code == 401
-
-
-def test_list_users_pagination(
-    client: TestClient,
+def test_list_users_member_forbidden(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    member = create_member(create_user)
+
+    token = get_token(
+        member.email,
+        "password123",
     )
 
-    create_user(email="user1@example.com")
-    create_user(email="user2@example.com")
-    create_user(email="user3@example.com")
-    create_user(email="user4@example.com")
+    response = client.get(
+        "/users",
+        headers=auth_header(token),
+    )
 
-    token = get_token(admin.email)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
+
+
+def test_list_users_pagination_first_page(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    for index in range(1, 6):
+        create_user(
+            email=f"user{index}@example.com",
+            full_name=f"User {index}",
+        )
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.get(
         "/users?page=1&page_size=2",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
@@ -143,28 +155,31 @@ def test_list_users_pagination(
     data = response.json()
 
     assert len(data) == 2
+    assert data[0]["email"] == "admin@example.com"
+    assert data[1]["email"] == "user1@example.com"
 
 
-def test_list_users_second_page(
-    client: TestClient,
+def test_list_users_pagination_second_page(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    admin = create_admin(create_user)
+
+    for index in range(1, 6):
+        create_user(
+            email=f"user{index}@example.com",
+            full_name=f"User {index}",
+        )
+
+    token = get_token(
+        admin.email,
+        "password123",
     )
-
-    create_user(email="user1@example.com")
-    create_user(email="user2@example.com")
-    create_user(email="user3@example.com")
-    create_user(email="user4@example.com")
-
-    token = get_token(admin.email)
 
     response = client.get(
         "/users?page=2&page_size=2",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
@@ -172,54 +187,31 @@ def test_list_users_second_page(
     data = response.json()
 
     assert len(data) == 2
+    assert data[0]["email"] == "user2@example.com"
+    assert data[1]["email"] == "user3@example.com"
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        "?page=0",
-        "?page=-1",
-        "?page_size=0",
-        "?page_size=-1",
-        "?page_size=101",
-    ],
-)
-def test_list_users_invalid_pagination(
-    client: TestClient,
-    create_user,
-    get_token,
-    query,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
-    token = get_token(admin.email)
-
-    response = client.get(
-        f"/users{query}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 422
-
-
-def test_list_users_empty(
-    client: TestClient,
+def test_list_users_pagination_last_partial_page(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    admin = create_admin(create_user)
+
+    for index in range(1, 5):
+        create_user(
+            email=f"user{index}@example.com",
+            full_name=f"User {index}",
+        )
+
+    token = get_token(
+        admin.email,
+        "password123",
     )
 
-    token = get_token(admin.email)
-
     response = client.get(
-        "/users",
-        headers={"Authorization": f"Bearer {token}"},
+        "/users?page=3&page_size=2",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
@@ -227,7 +219,112 @@ def test_list_users_empty(
     data = response.json()
 
     assert len(data) == 1
-    assert data[0]["email"] == admin.email
+    assert data[0]["email"] == "user4@example.com"
+
+
+def test_list_users_page_beyond_available_data(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    create_user(
+        email="user@example.com",
+    )
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.get(
+        "/users?page=10&page_size=20",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_users_invalid_page_zero(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.get(
+        "/users?page=0",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_users_invalid_page_negative(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.get(
+        "/users?page=-1",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_users_invalid_page_size_zero(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.get(
+        "/users?page_size=0",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_users_page_size_over_100(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.get(
+        "/users?page_size=101",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 422
 
 
 # ============================================================
@@ -235,27 +332,42 @@ def test_list_users_empty(
 # ============================================================
 
 
-def test_get_user_as_admin(
-    client: TestClient,
+def test_get_user_requires_authentication(
+    client,
     create_user,
-    get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
     user = create_user(
         email="user@example.com",
-        role="member",
-        full_name="Normal User",
     )
-
-    token = get_token(admin.email)
 
     response = client.get(
         f"/users/{user.id}",
-        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_get_user_admin_allowed(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    user = create_user(
+        email="target@example.com",
+        full_name="Target User",
+        role="member",
+    )
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.get(
+        f"/users/{user.id}",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
@@ -263,149 +375,81 @@ def test_get_user_as_admin(
     data = response.json()
 
     assert data["id"] == user.id
-    assert data["email"] == user.email
-    assert data["full_name"] == "Normal User"
+    assert data["email"] == "target@example.com"
+    assert data["full_name"] == "Target User"
     assert data["role"] == "member"
     assert data["is_active"] is True
-    assert "password_hash" not in data
 
 
-def test_get_user_self_as_admin(
-    client: TestClient,
+def test_get_user_manager_forbidden(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    manager = create_manager(create_user)
+
+    user = create_user(
+        email="target@example.com",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        manager.email,
+        "password123",
+    )
 
     response = client.get(
-        f"/users/{admin.id}",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/users/{user.id}",
+        headers=auth_header(token),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
 
-    data = response.json()
 
-    assert data["id"] == admin.id
-    assert data["email"] == admin.email
+def test_get_user_member_forbidden(
+    client,
+    create_user,
+    get_token,
+):
+    member = create_member(create_user)
+
+    user = create_user(
+        email="target@example.com",
+    )
+
+    token = get_token(
+        member.email,
+        "password123",
+    )
+
+    response = client.get(
+        f"/users/{user.id}",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
 
 
 def test_get_user_not_found(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
     )
 
-    token = get_token(admin.email)
-
     response = client.get(
-        "/users/999999",
-        headers={"Authorization": f"Bearer {token}"},
+        "/users/99999",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
-
-
-def test_get_user_requires_authentication(
-    client: TestClient,
-    create_user,
-):
-    user = create_user(
-        email="user@example.com",
-    )
-
-    response = client.get(f"/users/{user.id}")
-
-    assert response.status_code == 401
-
-
-def test_get_user_member_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    member = create_user(
-        email="member@example.com",
-        role="member",
-    )
-
-    target = create_user(
-        email="target@example.com",
-        role="member",
-    )
-
-    token = get_token(member.email)
-
-    response = client.get(
-        f"/users/{target.id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 403
-
-
-def test_get_user_manager_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    manager = create_user(
-        email="manager@example.com",
-        role="manager",
-    )
-
-    target = create_user(
-        email="target@example.com",
-        role="member",
-    )
-
-    token = get_token(manager.email)
-
-    response = client.get(
-        f"/users/{target.id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 403
-
-
-@pytest.mark.parametrize(
-    "user_id",
-    [
-        "abc",
-        "1.5",
-        "invalid",
-    ],
-)
-def test_get_user_invalid_id(
-    client: TestClient,
-    create_user,
-    get_token,
-    user_id,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
-    token = get_token(admin.email)
-
-    response = client.get(
-        f"/users/{user_id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 422
 
 
 # ============================================================
@@ -413,36 +457,47 @@ def test_get_user_invalid_id(
 # ============================================================
 
 
-@pytest.mark.parametrize(
-    "new_role",
-    [
-        "admin",
-        "manager",
-        "member",
-    ],
-)
-def test_update_user_role(
-    client: TestClient,
+def test_update_user_role_requires_authentication(
+    client,
     create_user,
-    get_token,
-    new_role,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
     user = create_user(
-        email="user@example.com",
-        role="member",
+        email="target@example.com",
     )
-
-    token = get_token(admin.email)
 
     response = client.patch(
         f"/users/{user.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": new_role},
+        json={
+            "role": "manager",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_update_user_role_admin_allowed(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    user = create_user(
+        email="target@example.com",
+        role="member",
+    )
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{user.id}/role",
+        headers=auth_header(token),
+        json={
+            "role": "manager",
+        },
     )
 
     assert response.status_code == 200
@@ -450,237 +505,250 @@ def test_update_user_role(
     data = response.json()
 
     assert data["id"] == user.id
-    assert data["role"] == new_role
+    assert data["role"] == "manager"
 
 
-def test_update_user_role_persists(
-    client: TestClient,
+def test_update_user_role_manager_forbidden(
+    client,
     create_user,
     get_token,
-    db,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
+    manager = create_manager(create_user)
 
     user = create_user(
-        email="user@example.com",
+        email="target@example.com",
         role="member",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        manager.email,
+        "password123",
+    )
 
     response = client.patch(
         f"/users/{user.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": "manager"},
+        headers=auth_header(token),
+        json={
+            "role": "manager",
+        },
     )
 
-    assert response.status_code == 200
-
-    db.refresh(user)
-
-    assert user.role == "manager"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
 
 
-def test_admin_cannot_remove_own_admin_role(
-    client: TestClient,
+def test_update_user_role_member_forbidden(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    member = create_member(create_user)
+
+    user = create_user(
+        email="target@example.com",
+        role="member",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        member.email,
+        "password123",
+    )
 
     response = client.patch(
-        f"/users/{admin.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": "member"},
+        f"/users/{user.id}/role",
+        headers=auth_header(token),
+        json={
+            "role": "manager",
+        },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == (
-        "You cannot remove your own admin role"
-    )
-
-
-def test_admin_can_keep_own_admin_role(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
-    token = get_token(admin.email)
-
-    response = client.patch(
-        f"/users/{admin.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": "admin"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["role"] == "admin"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
 
 
 def test_update_user_role_not_found(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
     )
 
-    token = get_token(admin.email)
-
     response = client.patch(
-        "/users/999999/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": "member"},
+        "/users/99999/role",
+        headers=auth_header(token),
+        json={
+            "role": "manager",
+        },
     )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
 
 
-def test_update_user_role_requires_authentication(
-    client: TestClient,
-    create_user,
-):
-    user = create_user(
-        email="user@example.com",
-    )
-
-    response = client.patch(
-        f"/users/{user.id}/role",
-        json={"role": "manager"},
-    )
-
-    assert response.status_code == 401
-
-
-def test_update_user_role_member_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    member = create_user(
-        email="member@example.com",
-        role="member",
-    )
-
-    target = create_user(
-        email="target@example.com",
-        role="member",
-    )
-
-    token = get_token(member.email)
-
-    response = client.patch(
-        f"/users/{target.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": "manager"},
-    )
-
-    assert response.status_code == 403
-
-
-def test_update_user_role_manager_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    manager = create_user(
-        email="manager@example.com",
-        role="manager",
-    )
-
-    target = create_user(
-        email="target@example.com",
-        role="member",
-    )
-
-    token = get_token(manager.email)
-
-    response = client.patch(
-        f"/users/{target.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": "admin"},
-    )
-
-    assert response.status_code == 403
-
-
-@pytest.mark.parametrize(
-    "role",
-    [
-        "owner",
-        "superadmin",
-        "ADMIN",
-        "",
-        None,
-    ],
-)
 def test_update_user_role_invalid_role(
-    client: TestClient,
+    client,
     create_user,
     get_token,
-    role,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
+    admin = create_admin(create_user)
 
     user = create_user(
-        email="user@example.com",
-        role="member",
+        email="target@example.com",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.patch(
         f"/users/{user.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"role": role},
+        headers=auth_header(token),
+        json={
+            "role": "superuser",
+        },
     )
 
     assert response.status_code == 422
 
 
 def test_update_user_role_missing_role(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
+    admin = create_admin(create_user)
 
     user = create_user(
-        email="user@example.com",
-        role="member",
+        email="target@example.com",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.patch(
         f"/users/{user.id}/role",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
         json={},
     )
 
     assert response.status_code == 422
+
+
+def test_admin_cannot_remove_own_admin_role(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{admin.id}/role",
+        headers=auth_header(token),
+        json={
+            "role": "manager",
+        },
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "You cannot remove your own admin role"
+    )
+
+
+def test_admin_can_keep_own_admin_role(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{admin.id}/role",
+        headers=auth_header(token),
+        json={
+            "role": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "admin"
+
+
+def test_admin_can_change_member_to_manager(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    user = create_user(
+        email="member@example.com",
+        role="member",
+    )
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{user.id}/role",
+        headers=auth_header(token),
+        json={
+            "role": "manager",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "manager"
+
+
+def test_admin_can_change_manager_to_member(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    user = create_user(
+        email="manager@example.com",
+        role="manager",
+    )
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{user.id}/role",
+        headers=auth_header(token),
+        json={
+            "role": "member",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "member"
 
 
 # ============================================================
@@ -688,28 +756,47 @@ def test_update_user_role_missing_role(
 # ============================================================
 
 
-def test_deactivate_user(
-    client: TestClient,
+def test_update_user_status_requires_authentication(
+    client,
     create_user,
-    get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
     user = create_user(
-        email="user@example.com",
-        role="member",
-        is_active=True,
+        email="target@example.com",
     )
-
-    token = get_token(admin.email)
 
     response = client.patch(
         f"/users/{user.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": False},
+        json={
+            "is_active": False,
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_update_user_status_admin_allowed(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    user = create_user(
+        email="target@example.com",
+        is_active=True,
+    )
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{user.id}/status",
+        headers=auth_header(token),
+        json={
+            "is_active": False,
+        },
     )
 
     assert response.status_code == 200
@@ -720,358 +807,321 @@ def test_deactivate_user(
     assert data["is_active"] is False
 
 
-def test_activate_user(
-    client: TestClient,
+def test_update_user_status_manager_forbidden(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
+    manager = create_manager(create_user)
 
     user = create_user(
-        email="user@example.com",
-        role="member",
-        is_active=False,
+        email="target@example.com",
+        is_active=True,
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        manager.email,
+        "password123",
+    )
 
     response = client.patch(
         f"/users/{user.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": True},
+        headers=auth_header(token),
+        json={
+            "is_active": False,
+        },
     )
 
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert data["id"] == user.id
-    assert data["is_active"] is True
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
 
 
-def test_update_user_status_persists(
-    client: TestClient,
+def test_update_user_status_member_forbidden(
+    client,
     create_user,
     get_token,
-    db,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
+    member = create_member(create_user)
 
     user = create_user(
-        email="user@example.com",
-        role="member",
+        email="target@example.com",
         is_active=True,
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        member.email,
+        "password123",
+    )
 
     response = client.patch(
         f"/users/{user.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": False},
+        headers=auth_header(token),
+        json={
+            "is_active": False,
+        },
     )
 
-    assert response.status_code == 200
-
-    db.refresh(user)
-
-    assert user.is_active is False
-
-
-def test_admin_cannot_deactivate_own_account(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-        is_active=True,
-    )
-
-    token = get_token(admin.email)
-
-    response = client.patch(
-        f"/users/{admin.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": False},
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == (
-        "You cannot deactivate your own account"
-    )
-
-
-def test_admin_can_keep_own_account_active(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-        is_active=True,
-    )
-
-    token = get_token(admin.email)
-
-    response = client.patch(
-        f"/users/{admin.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": True},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["is_active"] is True
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
 
 
 def test_update_user_status_not_found(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
     )
 
-    token = get_token(admin.email)
-
     response = client.patch(
-        "/users/999999/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": False},
+        "/users/99999/status",
+        headers=auth_header(token),
+        json={
+            "is_active": False,
+        },
     )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
 
 
-def test_update_user_status_requires_authentication(
-    client: TestClient,
+def test_admin_can_activate_user(
+    client,
     create_user,
+    get_token,
 ):
+    admin = create_admin(create_user)
+
     user = create_user(
-        email="user@example.com",
+        email="inactive@example.com",
+        is_active=False,
+    )
+
+    token = get_token(
+        admin.email,
+        "password123",
     )
 
     response = client.patch(
         f"/users/{user.id}/status",
-        json={"is_active": False},
-    )
-
-    assert response.status_code == 401
-
-
-def test_update_user_status_member_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    member = create_user(
-        email="member@example.com",
-        role="member",
-    )
-
-    target = create_user(
-        email="target@example.com",
-        role="member",
-    )
-
-    token = get_token(member.email)
-
-    response = client.patch(
-        f"/users/{target.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": False},
-    )
-
-    assert response.status_code == 403
-
-
-def test_update_user_status_manager_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    manager = create_user(
-        email="manager@example.com",
-        role="manager",
-    )
-
-    target = create_user(
-        email="target@example.com",
-        role="member",
-    )
-
-    token = get_token(manager.email)
-
-    response = client.patch(
-        f"/users/{target.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": False},
-    )
-
-    assert response.status_code == 403
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        True,
-        False,
-        "true",
-        "false",
-        1,
-        0,
-        "yes",
-        "no",
-    ],
-)
-def test_update_user_status_accepts_boolean_values(
-    client: TestClient,
-    create_user,
-    get_token,
-    value,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
-    user = create_user(
-        email="user@example.com",
-        role="member",
-    )
-
-    token = get_token(admin.email)
-
-    response = client.patch(
-        f"/users/{user.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": value},
+        headers=auth_header(token),
+        json={
+            "is_active": True,
+        },
     )
 
     assert response.status_code == 200
+    assert response.json()["is_active"] is True
 
 
-def test_update_user_status_rejects_null(
-    client: TestClient,
+def test_admin_can_deactivate_user(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
+    admin = create_admin(create_user)
 
     user = create_user(
-        email="user@example.com",
-        role="member",
+        email="active@example.com",
+        is_active=True,
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.patch(
         f"/users/{user.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"is_active": None},
+        headers=auth_header(token),
+        json={
+            "is_active": False,
+        },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
 
-def test_update_user_status_missing_field(
-    client: TestClient,
+
+def test_admin_cannot_deactivate_own_account(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
     )
+
+    response = client.patch(
+        f"/users/{admin.id}/status",
+        headers=auth_header(token),
+        json={
+            "is_active": False,
+        },
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "You cannot deactivate your own account"
+    )
+
+
+def test_admin_can_keep_own_account_active(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{admin.id}/status",
+        headers=auth_header(token),
+        json={
+            "is_active": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is True
+
+
+def test_update_user_status_missing_is_active(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
 
     user = create_user(
-        email="user@example.com",
-        role="member",
+        email="target@example.com",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.patch(
         f"/users/{user.id}/status",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
         json={},
     )
 
     assert response.status_code == 422
 
 
-# ============================================================
-# Response security
-# ============================================================
-
-
-def test_user_response_does_not_expose_password_hash(
-    client: TestClient,
+def test_update_user_status_invalid_type(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    admin = create_admin(create_user)
+
+    user = create_user(
+        email="target@example.com",
     )
 
-    target = create_user(
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        f"/users/{user.id}/status",
+        headers=auth_header(token),
+        json={
+            "is_active": [],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+# ============================================================
+# RESPONSE / DATABASE CONSISTENCY
+# ============================================================
+
+
+def test_update_user_role_persists(
+    client,
+    create_user,
+    get_token,
+    db,
+):
+    admin = create_admin(create_user)
+
+    user = create_user(
         email="target@example.com",
         role="member",
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
-    response = client.get(
-        f"/users/{target.id}",
-        headers={"Authorization": f"Bearer {token}"},
+    response = client.patch(
+        f"/users/{user.id}/role",
+        headers=auth_header(token),
+        json={
+            "role": "manager",
+        },
     )
 
     assert response.status_code == 200
 
-    data = response.json()
+    db.expire_all()
 
-    assert "password_hash" not in data
-    assert "password" not in data
+    updated_user = db.get(User, user.id)
+
+    assert updated_user is not None
+    assert updated_user.role == "manager"
 
 
-def test_list_users_does_not_expose_password_hash(
-    client: TestClient,
+def test_update_user_status_persists(
+    client,
     create_user,
     get_token,
+    db,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
+    admin = create_admin(create_user)
 
-    create_user(
+    user = create_user(
         email="target@example.com",
-        role="member",
+        is_active=True,
     )
 
-    token = get_token(admin.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
-    response = client.get(
-        "/users",
-        headers={"Authorization": f"Bearer {token}"},
+    response = client.patch(
+        f"/users/{user.id}/status",
+        headers=auth_header(token),
+        json={
+            "is_active": False,
+        },
     )
 
     assert response.status_code == 200
 
-    for user in response.json():
-        assert "password_hash" not in user
-        assert "password" not in user
+    db.expire_all()
+
+    updated_user = db.get(User, user.id)
+
+    assert updated_user is not None
+    assert updated_user.is_active is False

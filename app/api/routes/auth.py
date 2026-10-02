@@ -1,39 +1,40 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.auth.password import hash_password, verify_password
+from app.api.dependencies import get_current_user
 from app.auth.jwt import create_access_token
+from app.auth.password import hash_password, verify_password
 from app.auth.refresh import (
     generate_refresh_token,
     hash_refresh_token,
 )
+from app.core.config import REFRESH_TOKEN_EXPIRE_DAYS
 from app.db.models import RefreshToken, User
 from app.db.session import get_db
 from app.schemas import (
-    LoginRequest, 
-    TokenResponse, 
-    UserCreate, 
-    UserResponse, 
-    RefreshTokenRequest,
     ChangePasswordRequest,
+    LoginRequest,
+    RefreshTokenRequest,
+    TokenResponse,
+    UserCreate,
+    UserResponse,
 )
-
-
 from app.services.auth_service import authenticate_user, create_tokens
-
-from app.api.dependencies import get_current_user
-
-from datetime import datetime, timezone, timedelta
-
-from app.core.config import REFRESH_TOKEN_EXPIRE_DAYS
-
 
 
 router = APIRouter(
     prefix="/auth",
     tags=["authentication"],
 )
+
+
+# ---------------------------------------------------------
+# Register
+# ---------------------------------------------------------
+
 
 @router.post(
     "/register",
@@ -68,6 +69,12 @@ def register(
 
     return user
 
+
+# ---------------------------------------------------------
+# Login
+# ---------------------------------------------------------
+
+
 @router.post(
     "/login",
     response_model=TokenResponse,
@@ -98,6 +105,12 @@ def login(
         refresh_token=refresh_token,
     )
 
+
+# ---------------------------------------------------------
+# Refresh token
+# ---------------------------------------------------------
+
+
 @router.post(
     "/refresh",
     response_model=TokenResponse,
@@ -116,8 +129,6 @@ def refresh(
         )
     )
 
-    now = datetime.now(timezone.utc)
-
     if token_record is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -130,8 +141,12 @@ def refresh(
             detail="Refresh token has been revoked",
         )
 
+    now = datetime.now(timezone.utc)
+
     expires_at = token_record.expires_at
 
+    # SQLite may return naive datetimes even when the model
+    # uses timezone-aware datetime values.
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
 
@@ -141,7 +156,10 @@ def refresh(
             detail="Refresh token has expired",
         )
 
-    user = db.get(User, token_record.user_id)
+    user = db.get(
+        User,
+        token_record.user_id,
+    )
 
     if user is None or not user.is_active:
         raise HTTPException(
@@ -149,11 +167,13 @@ def refresh(
             detail="Invalid or inactive user",
         )
 
-    # Revoke the old refresh token.
+    # Rotate the refresh token.
     token_record.revoked_at = now
 
-    # Issue new tokens.
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(
+        user.id
+    )
+
     new_refresh_token = generate_refresh_token()
 
     new_refresh_record = RefreshToken(
@@ -173,6 +193,12 @@ def refresh(
         access_token=access_token,
         refresh_token=new_refresh_token,
     )
+
+
+# ---------------------------------------------------------
+# Logout
+# ---------------------------------------------------------
+
 
 @router.post("/logout")
 def logout(
@@ -196,7 +222,15 @@ def logout(
             )
             db.commit()
 
-    return {"message": "Logged out successfully"}
+    return {
+        "message": "Logged out successfully",
+    }
+
+
+# ---------------------------------------------------------
+# Current user
+# ---------------------------------------------------------
+
 
 @router.get(
     "/me",
@@ -206,6 +240,12 @@ def get_me(
     current_user: User = Depends(get_current_user),
 ):
     return current_user
+
+
+# ---------------------------------------------------------
+# Change password
+# ---------------------------------------------------------
+
 
 @router.put("/me/password")
 def change_password(
@@ -226,7 +266,8 @@ def change_password(
         data.new_password
     )
 
-    # Revoke all existing refresh tokens.
+    # Changing the password invalidates all existing
+    # refresh tokens for this user.
     now = datetime.now(timezone.utc)
 
     db.execute(

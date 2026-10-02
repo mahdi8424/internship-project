@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from app.auth.refresh import hash_refresh_token
 from app.db.models import RefreshToken
 
@@ -29,6 +27,10 @@ def test_register_user(client):
     assert data["full_name"] == "Test User"
     assert data["role"] == "member"
     assert data["is_active"] is True
+    assert data["id"] > 0
+
+    assert "password" not in data
+    assert "password_hash" not in data
 
 
 def test_register_user_password_is_not_returned(client):
@@ -56,20 +58,23 @@ def test_register_duplicate_email(client):
         "full_name": "Test User",
     }
 
-    response = client.post(
+    first_response = client.post(
         "/auth/register",
         json=payload,
     )
 
-    assert response.status_code == 201
+    assert first_response.status_code == 201
 
-    response = client.post(
+    second_response = client.post(
         "/auth/register",
         json=payload,
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Email already registered"
+    assert second_response.status_code == 409
+    assert (
+        second_response.json()["detail"]
+        == "Email already registered"
+    )
 
 
 def test_register_missing_email(client):
@@ -108,19 +113,30 @@ def test_register_missing_full_name(client):
     assert response.status_code == 422
 
 
-def test_register_invalid_email(client):
+def test_register_password_too_short(client):
     response = client.post(
         "/auth/register",
         json={
-            "email": "not-an-email",
-            "password": "password123",
+            "email": "user@example.com",
+            "password": "short",
             "full_name": "Test User",
         },
     )
 
-    # This depends on whether UserCreate uses EmailStr.
-    # If email is simply `str`, this will be 201 instead.
-    assert response.status_code in (201, 422)
+    assert response.status_code == 422
+
+
+def test_register_empty_password(client):
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "user@example.com",
+            "password": "",
+            "full_name": "Test User",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_register_empty_payload(client):
@@ -132,13 +148,29 @@ def test_register_empty_payload(client):
     assert response.status_code == 422
 
 
+def test_register_invalid_email_format_is_accepted_by_current_schema(
+    client,
+):
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "not-an-email",
+            "password": "password123",
+            "full_name": "Test User",
+        },
+    )
+
+    # UserCreate currently defines email as `str`, not EmailStr.
+    assert response.status_code == 201
+
+
 # ============================================================
 # LOGIN
 # ============================================================
 
 
 def test_login_user(client):
-    client.post(
+    register_response = client.post(
         "/auth/register",
         json={
             "email": "user@example.com",
@@ -146,6 +178,8 @@ def test_login_user(client):
             "full_name": "Test User",
         },
     )
+
+    assert register_response.status_code == 201
 
     response = client.post(
         "/auth/login",
@@ -183,7 +217,10 @@ def test_login_wrong_password(client):
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid email or password"
+    assert (
+        response.json()["detail"]
+        == "Invalid email or password"
+    )
 
 
 def test_login_unknown_email(client):
@@ -196,7 +233,10 @@ def test_login_unknown_email(client):
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid email or password"
+    assert (
+        response.json()["detail"]
+        == "Invalid email or password"
+    )
 
 
 def test_login_inactive_user(client, create_user):
@@ -214,7 +254,10 @@ def test_login_inactive_user(client, create_user):
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid email or password"
+    assert (
+        response.json()["detail"]
+        == "Invalid email or password"
+    )
 
 
 def test_login_missing_email(client):
@@ -271,10 +314,7 @@ def test_me_requires_authentication(client):
     assert response.status_code == 401
 
 
-def test_me_with_valid_token(
-    client,
-    get_token,
-):
+def test_me_with_valid_token(client, get_token):
     client.post(
         "/auth/register",
         json={
@@ -387,6 +427,95 @@ def test_refresh_token(client):
     )
 
 
+def test_refresh_token_old_token_is_revoked(client):
+    client.post(
+        "/auth/register",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+            "full_name": "Test User",
+        },
+    )
+
+    login_response = client.post(
+        "/auth/login",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+        },
+    )
+
+    old_refresh_token = login_response.json()["refresh_token"]
+
+    refresh_response = client.post(
+        "/auth/refresh",
+        json={
+            "refresh_token": old_refresh_token,
+        },
+    )
+
+    assert refresh_response.status_code == 200
+
+    second_refresh_response = client.post(
+        "/auth/refresh",
+        json={
+            "refresh_token": old_refresh_token,
+        },
+    )
+
+    assert second_refresh_response.status_code == 401
+    assert (
+        second_refresh_response.json()["detail"]
+        == "Refresh token has been revoked"
+    )
+
+
+def test_refresh_token_new_token_works(client):
+    client.post(
+        "/auth/register",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+            "full_name": "Test User",
+        },
+    )
+
+    login_response = client.post(
+        "/auth/login",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+        },
+    )
+
+    old_tokens = login_response.json()
+
+    refresh_response = client.post(
+        "/auth/refresh",
+        json={
+            "refresh_token": old_tokens["refresh_token"],
+        },
+    )
+
+    assert refresh_response.status_code == 200
+
+    new_tokens = refresh_response.json()
+
+    second_refresh_response = client.post(
+        "/auth/refresh",
+        json={
+            "refresh_token": new_tokens["refresh_token"],
+        },
+    )
+
+    assert second_refresh_response.status_code == 200
+
+    second_tokens = second_refresh_response.json()
+
+    assert second_tokens["access_token"]
+    assert second_tokens["refresh_token"]
+
+
 def test_refresh_token_invalid(client):
     response = client.post(
         "/auth/refresh",
@@ -396,7 +525,10 @@ def test_refresh_token_invalid(client):
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid refresh token"
+    assert (
+        response.json()["detail"]
+        == "Invalid refresh token"
+    )
 
 
 def test_refresh_token_missing(client):
@@ -421,7 +553,6 @@ def test_refresh_token_empty(client):
 
 def test_refresh_token_revoked(
     client,
-    db,
 ):
     client.post(
         "/auth/register",
@@ -459,7 +590,10 @@ def test_refresh_token_revoked(
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Refresh token has been revoked"
+    assert (
+        response.json()["detail"]
+        == "Refresh token has been revoked"
+    )
 
 
 def test_refresh_token_expired(
@@ -476,8 +610,9 @@ def test_refresh_token_expired(
     token_record = RefreshToken(
         user_id=user.id,
         token_hash=hash_refresh_token(refresh_token),
-        expires_at=datetime.now(timezone.utc) - timedelta(
-            days=1
+        expires_at=(
+            datetime.now(timezone.utc)
+            - timedelta(days=1)
         ),
     )
 
@@ -492,7 +627,10 @@ def test_refresh_token_expired(
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Refresh token has expired"
+    assert (
+        response.json()["detail"]
+        == "Refresh token has expired"
+    )
 
 
 def test_refresh_token_for_inactive_user(
@@ -510,8 +648,9 @@ def test_refresh_token_for_inactive_user(
     token_record = RefreshToken(
         user_id=user.id,
         token_hash=hash_refresh_token(refresh_token),
-        expires_at=datetime.now(timezone.utc) + timedelta(
-            days=7
+        expires_at=(
+            datetime.now(timezone.utc)
+            + timedelta(days=7)
         ),
     )
 
@@ -526,7 +665,10 @@ def test_refresh_token_for_inactive_user(
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid or inactive user"
+    assert (
+        response.json()["detail"]
+        == "Invalid or inactive user"
+    )
 
 
 def test_refresh_token_for_missing_user(
@@ -538,8 +680,9 @@ def test_refresh_token_for_missing_user(
     token_record = RefreshToken(
         user_id=99999,
         token_hash=hash_refresh_token(refresh_token),
-        expires_at=datetime.now(timezone.utc) + timedelta(
-            days=7
+        expires_at=(
+            datetime.now(timezone.utc)
+            + timedelta(days=7)
         ),
     )
 
@@ -554,7 +697,10 @@ def test_refresh_token_for_missing_user(
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid or inactive user"
+    assert (
+        response.json()["detail"]
+        == "Invalid or inactive user"
+    )
 
 
 # ============================================================
@@ -562,9 +708,7 @@ def test_refresh_token_for_missing_user(
 # ============================================================
 
 
-def test_logout(
-    client,
-):
+def test_logout(client):
     client.post(
         "/auth/register",
         json={
@@ -593,7 +737,7 @@ def test_logout(
 
     assert response.status_code == 200
     assert response.json() == {
-        "message": "Logged out successfully"
+        "message": "Logged out successfully",
     }
 
     refresh_response = client.post(
@@ -620,14 +764,11 @@ def test_logout_unknown_refresh_token(client):
 
     assert response.status_code == 200
     assert response.json() == {
-        "message": "Logged out successfully"
+        "message": "Logged out successfully",
     }
 
 
-def test_logout_already_revoked_token(
-    client,
-    db,
-):
+def test_logout_already_revoked_token(client):
     client.post(
         "/auth/register",
         json={
@@ -665,7 +806,7 @@ def test_logout_already_revoked_token(
 
     assert second_response.status_code == 200
     assert second_response.json() == {
-        "message": "Logged out successfully"
+        "message": "Logged out successfully",
     }
 
 
@@ -706,9 +847,7 @@ def test_change_password_requires_authentication(client):
     assert response.status_code == 401
 
 
-def test_change_password(
-    client,
-):
+def test_change_password(client):
     client.post(
         "/auth/register",
         json={
@@ -741,13 +880,11 @@ def test_change_password(
 
     assert response.status_code == 200
     assert response.json() == {
-        "message": "Password changed successfully"
+        "message": "Password changed successfully",
     }
 
 
-def test_change_password_wrong_current_password(
-    client,
-):
+def test_change_password_wrong_current_password(client):
     client.post(
         "/auth/register",
         json={
@@ -785,9 +922,45 @@ def test_change_password_wrong_current_password(
     )
 
 
-def test_change_password_new_password_too_short(
-    client,
-):
+def test_change_password_empty_current_password(client):
+    client.post(
+        "/auth/register",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+            "full_name": "Test User",
+        },
+    )
+
+    login_response = client.post(
+        "/auth/login",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+        },
+    )
+
+    tokens = login_response.json()
+
+    response = client.put(
+        "/auth/me/password",
+        headers={
+            "Authorization": f"Bearer {tokens['access_token']}",
+        },
+        json={
+            "current_password": "",
+            "new_password": "newpassword123",
+        },
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Current password is incorrect"
+    )
+
+
+def test_change_password_new_password_too_short(client):
     client.post(
         "/auth/register",
         json={
@@ -821,9 +994,7 @@ def test_change_password_new_password_too_short(
     assert response.status_code == 422
 
 
-def test_change_password_new_password_too_long(
-    client,
-):
+def test_change_password_new_password_too_long(client):
     client.post(
         "/auth/register",
         json={
@@ -859,15 +1030,33 @@ def test_change_password_new_password_too_long(
 
 def test_change_password_missing_current_password(
     client,
+    get_token,
 ):
+    client.post(
+        "/auth/register",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+            "full_name": "Test User",
+        },
+    )
+
+    token = get_token(
+        "user@example.com",
+        "password123",
+    )
+
     response = client.put(
         "/auth/me/password",
+        headers={
+            "Authorization": f"Bearer {token}",
+        },
         json={
             "new_password": "newpassword123",
         },
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 422
 
 
 def test_change_password_missing_new_password(
@@ -901,10 +1090,7 @@ def test_change_password_missing_new_password(
     assert response.status_code == 422
 
 
-def test_change_password_revokes_existing_refresh_tokens(
-    client,
-    db,
-):
+def test_change_password_revokes_existing_refresh_token(client):
     client.post(
         "/auth/register",
         json={
@@ -951,9 +1137,78 @@ def test_change_password_revokes_existing_refresh_tokens(
     )
 
 
-def test_change_password_does_not_allow_old_password(
-    client,
-):
+def test_change_password_revokes_all_refresh_tokens(client):
+    client.post(
+        "/auth/register",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+            "full_name": "Test User",
+        },
+    )
+
+    first_login = client.post(
+        "/auth/login",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+        },
+    )
+
+    second_login = client.post(
+        "/auth/login",
+        json={
+            "email": "user@example.com",
+            "password": "password123",
+        },
+    )
+
+    first_tokens = first_login.json()
+    second_tokens = second_login.json()
+
+    response = client.put(
+        "/auth/me/password",
+        headers={
+            "Authorization": (
+                f"Bearer {first_tokens['access_token']}"
+            ),
+        },
+        json={
+            "current_password": "password123",
+            "new_password": "newpassword123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    first_refresh = client.post(
+        "/auth/refresh",
+        json={
+            "refresh_token": first_tokens["refresh_token"],
+        },
+    )
+
+    second_refresh = client.post(
+        "/auth/refresh",
+        json={
+            "refresh_token": second_tokens["refresh_token"],
+        },
+    )
+
+    assert first_refresh.status_code == 401
+    assert second_refresh.status_code == 401
+
+    assert (
+        first_refresh.json()["detail"]
+        == "Refresh token has been revoked"
+    )
+    assert (
+        second_refresh.json()["detail"]
+        == "Refresh token has been revoked"
+    )
+
+
+def test_change_password_does_not_allow_old_password(client):
     client.post(
         "/auth/register",
         json={
@@ -997,9 +1252,7 @@ def test_change_password_does_not_allow_old_password(
     assert old_password_response.status_code == 401
 
 
-def test_change_password_allows_new_password(
-    client,
-):
+def test_change_password_allows_new_password(client):
     client.post(
         "/auth/register",
         json={
@@ -1083,7 +1336,9 @@ def test_complete_auth_flow(client):
     me_response = client.get(
         "/auth/me",
         headers={
-            "Authorization": f"Bearer {tokens['access_token']}",
+            "Authorization": (
+                f"Bearer {tokens['access_token']}"
+            ),
         },
     )
 
@@ -1102,17 +1357,33 @@ def test_complete_auth_flow(client):
 
     new_tokens = refresh_response.json()
 
-    # New access token works
+    # Old refresh token is now invalid.
+    old_refresh_response = client.post(
+        "/auth/refresh",
+        json={
+            "refresh_token": tokens["refresh_token"],
+        },
+    )
+
+    assert old_refresh_response.status_code == 401
+    assert (
+        old_refresh_response.json()["detail"]
+        == "Refresh token has been revoked"
+    )
+
+    # New access token works.
     me_response = client.get(
         "/auth/me",
         headers={
-            "Authorization": f"Bearer {new_tokens['access_token']}",
+            "Authorization": (
+                f"Bearer {new_tokens['access_token']}"
+            ),
         },
     )
 
     assert me_response.status_code == 200
 
-    # Logout
+    # Logout.
     logout_response = client.post(
         "/auth/logout",
         json={
@@ -1122,7 +1393,7 @@ def test_complete_auth_flow(client):
 
     assert logout_response.status_code == 200
 
-    # Refresh token no longer works
+    # Logged-out refresh token no longer works.
     refresh_response = client.post(
         "/auth/refresh",
         json={
@@ -1131,3 +1402,7 @@ def test_complete_auth_flow(client):
     )
 
     assert refresh_response.status_code == 401
+    assert (
+        refresh_response.json()["detail"]
+        == "Refresh token has been revoked"
+    )

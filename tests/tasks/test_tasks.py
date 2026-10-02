@@ -1,5 +1,115 @@
-import pytest
-from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.db.models import ProjectMember, Task
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+
+def auth_header(token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+    }
+
+
+def create_admin(create_user):
+    return create_user(
+        email="admin@example.com",
+        role="admin",
+        full_name="Admin User",
+    )
+
+
+def create_manager(
+    create_user,
+    email="manager@example.com",
+):
+    return create_user(
+        email=email,
+        role="manager",
+        full_name="Manager User",
+    )
+
+
+def create_member(
+    create_user,
+    email="member@example.com",
+):
+    return create_user(
+        email=email,
+        role="member",
+        full_name="Member User",
+    )
+
+
+def create_project(
+    client,
+    token,
+    name="Test Project",
+    description="Test Description",
+):
+    response = client.post(
+        "/projects",
+        headers=auth_header(token),
+        json={
+            "name": name,
+            "description": description,
+        },
+    )
+
+    assert response.status_code == 201
+
+    return response.json()
+
+
+def add_project_member(
+    client,
+    token,
+    project_id,
+    user_id,
+):
+    response = client.post(
+        f"/projects/{project_id}/members",
+        headers=auth_header(token),
+        json={
+            "user_id": user_id,
+        },
+    )
+
+    assert response.status_code == 201
+
+    return response.json()
+
+
+def create_task(
+    client,
+    token,
+    project_id,
+    title="Test Task",
+    description="Test Description",
+    task_status="todo",
+    assignee_id=None,
+):
+    payload = {
+        "title": title,
+        "description": description,
+        "status": task_status,
+    }
+
+    if assignee_id is not None:
+        payload["assignee_id"] = assignee_id
+
+    response = client.post(
+        f"/projects/{project_id}/tasks",
+        headers=auth_header(token),
+        json=payload,
+    )
+
+    assert response.status_code == 201
+
+    return response.json()
 
 
 # ============================================================
@@ -7,36 +117,61 @@ from fastapi.testclient import TestClient
 # ============================================================
 
 
-def test_create_task_as_project_owner(
-    client: TestClient,
+def test_create_task_requires_authentication(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
+    project = create_project(
+        client,
+        token,
+    )
 
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
         json={
-            "name": "Test Project",
-            "description": "Project description",
+            "title": "Task",
         },
     )
 
-    assert project_response.status_code == 201
+    assert response.status_code == 401
 
-    project_id = project_response.json()["id"]
+
+def test_admin_can_create_task_in_any_project(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+    manager = create_manager(create_user)
+
+    admin_token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
 
     response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(admin_token),
         json={
-            "title": "Test Task",
-            "description": "Task description",
+            "title": "Admin Task",
         },
     )
 
@@ -44,271 +179,299 @@ def test_create_task_as_project_owner(
 
     data = response.json()
 
-    assert data["project_id"] == project_id
-    assert data["title"] == "Test Task"
-    assert data["description"] == "Task description"
-    assert data["status"] == "todo"
-    assert data["assignee_id"] is None
-    assert data["created_by"] == owner.id
-
-
-def test_create_task_as_project_member(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    member = create_user(
-        email="member@example.com",
-    )
-
-    owner_token = get_token(owner.email)
-    member_token = get_token(member.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Test Project"},
-    )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {owner_token}"},
-    )
-
-    assert add_response.status_code == 201
-
-    response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {member_token}"},
-        json={"title": "Member Task"},
-    )
-
-    assert response.status_code == 201
-
-    data = response.json()
-
-    assert data["title"] == "Member Task"
-    assert data["created_by"] == member.id
-
-
-def test_create_task_as_admin(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    admin_token = get_token(admin.email)
-    owner_token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Owner Project"},
-    )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
-
-    response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"title": "Admin Task"},
-    )
-
-    assert response.status_code == 201
-
-    data = response.json()
-
-    assert data["project_id"] == project_id
-    assert data["title"] == "Admin Task"
+    assert data["project_id"] == project["id"]
     assert data["created_by"] == admin.id
+    assert data["title"] == "Admin Task"
+    assert data["status"] == "todo"
 
 
-def test_create_task_as_non_member_forbidden(
-    client: TestClient,
+def test_manager_can_create_task_in_own_project(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    other_user = create_user(
-        email="other@example.com",
+    project = create_project(
+        client,
+        token,
     )
-
-    owner_token = get_token(owner.email)
-    other_token = get_token(other_user.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Private Project"},
-    )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
 
     response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {other_token}"},
-        json={"title": "Forbidden Task"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
+        json={
+            "title": "Manager Task",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["created_by"] == manager.id
+
+
+def test_manager_cannot_create_task_in_other_manager_project(
+    client,
+    create_user,
+    get_token,
+):
+    manager1 = create_manager(
+        create_user,
+        "manager1@example.com",
+    )
+
+    manager2 = create_manager(
+        create_user,
+        "manager2@example.com",
+    )
+
+    token1 = get_token(
+        manager1.email,
+        "password123",
+    )
+
+    token2 = get_token(
+        manager2.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token2,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token1),
+        json={
+            "title": "Forbidden Task",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_manager_member_cannot_create_task_in_other_manager_project(
+    client,
+    create_user,
+    get_token,
+):
+    owner = create_manager(
+        create_user,
+        "owner@example.com",
+    )
+
+    manager = create_manager(
+        create_user,
+        "manager@example.com",
+    )
+
+    owner_token = get_token(
+        owner.email,
+        "password123",
+    )
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        owner_token,
+    )
+
+    add_project_member(
+        client,
+        owner_token,
+        project["id"],
+        manager.id,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(manager_token),
+        json={
+            "title": "Forbidden Task",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_member_cannot_create_task(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    member_token = get_token(
+        member.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(member_token),
+        json={
+            "title": "Forbidden Task",
+        },
     )
 
     assert response.status_code == 403
 
 
 def test_create_task_project_not_found(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    user = create_user(
-        email="user@example.com",
-    )
+    manager = create_manager(create_user)
 
-    token = get_token(user.email)
+    token = get_token(
+        manager.email,
+        "password123",
+    )
 
     response = client.post(
         "/projects/99999/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Test Task"},
+        headers=auth_header(token),
+        json={
+            "title": "Task",
+        },
     )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Project not found"
 
 
-# ============================================================
-# CREATE TASK VALIDATION
-# ============================================================
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"title": ""},
-        {"title": "a" * 256},
-    ],
-)
-def test_create_task_invalid_title(
-    client: TestClient,
+def test_create_task_title_required(
+    client,
     create_user,
     get_token,
-    payload,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        token,
     )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
 
     response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json=payload,
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
+        json={},
     )
 
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize(
-    "task_status",
-    [
-        "todo",
-        "in_progress",
-        "done",
-    ],
-)
-def test_create_task_valid_status(
-    client: TestClient,
+def test_create_task_empty_title_rejected(
+    client,
     create_user,
     get_token,
-    task_status,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        token,
     )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
 
     response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
         json={
-            "title": "Test Task",
-            "status": task_status,
+            "title": "",
         },
     )
 
-    assert response.status_code == 201
-    assert response.json()["status"] == task_status
+    assert response.status_code == 422
 
 
-def test_create_task_invalid_status(
-    client: TestClient,
+def test_create_task_title_over_255_rejected(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        token,
     )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
 
     response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
         json={
-            "title": "Test Task",
+            "title": "a" * 256,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_task_invalid_status_rejected(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
+        json={
+            "title": "Task",
             "status": "invalid",
         },
     )
@@ -316,46 +479,167 @@ def test_create_task_invalid_status(
     assert response.status_code == 422
 
 
+def test_create_task_default_status_is_todo(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
+        json={
+            "title": "Task",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "todo"
+
+
+def test_create_task_all_valid_statuses(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    for task_status in (
+        "todo",
+        "in_progress",
+        "done",
+    ):
+        response = client.post(
+            f"/projects/{project['id']}/tasks",
+            headers=auth_header(token),
+            json={
+                "title": f"{task_status} task",
+                "status": task_status,
+            },
+        )
+
+        assert response.status_code == 201
+        assert response.json()["status"] == task_status
+
+
 # ============================================================
 # ASSIGNEE VALIDATION
 # ============================================================
 
 
-def test_create_task_with_project_member_assignee(
-    client: TestClient,
+def test_create_task_assignee_must_exist(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    member = create_user(
-        email="member@example.com",
+    project = create_project(
+        client,
+        token,
     )
-
-    owner_token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Test Project"},
-    )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {owner_token}"},
-    )
-
-    assert add_response.status_code == 201
 
     response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
+        json={
+            "title": "Task",
+            "assignee_id": 99999,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Assignee not found"
+
+
+def test_create_task_assignee_must_be_project_member(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    other_member = create_member(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
+        json={
+            "title": "Task",
+            "assignee_id": other_member.id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Assignee must be a member of the project"
+    )
+
+
+def test_create_task_can_assign_project_member(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(manager_token),
         json={
             "title": "Assigned Task",
             "assignee_id": member.id,
@@ -366,293 +650,331 @@ def test_create_task_with_project_member_assignee(
     assert response.json()["assignee_id"] == member.id
 
 
-def test_create_task_with_nonexistent_assignee(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
-
-    response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "title": "Assigned Task",
-            "assignee_id": 99999,
-        },
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Assignee not found"
-
-
-def test_create_task_with_non_member_assignee(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    other_user = create_user(
-        email="other@example.com",
-    )
-
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
-
-    response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "title": "Assigned Task",
-            "assignee_id": other_user.id,
-        },
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == (
-        "Assignee must be a member of the project"
-    )
-
-
 # ============================================================
 # LIST TASKS
 # ============================================================
 
 
-def test_list_tasks_as_owner(
-    client: TestClient,
+def test_list_tasks_requires_authentication(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        token,
     )
-
-    project_id = project_response.json()["id"]
-
-    for title in ["Task 1", "Task 2", "Task 3"]:
-        response = client.post(
-            f"/projects/{project_id}/tasks",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"title": title},
-        )
-        assert response.status_code == 201
 
     response = client.get(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks",
+    )
+
+    assert response.status_code == 401
+
+
+def test_admin_can_list_tasks_from_any_project(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+    manager = create_manager(create_user)
+
+    admin_token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    response = client.get(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(admin_token),
     )
 
     assert response.status_code == 200
 
     data = response.json()
 
-    assert len(data) == 3
-    assert [task["title"] for task in data] == [
-        "Task 1",
-        "Task 2",
-        "Task 3",
-    ]
+    assert len(data) == 1
+    assert data[0]["id"] == task["id"]
 
 
-def test_list_tasks_as_member(
-    client: TestClient,
+def test_manager_can_list_own_project_tasks(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    member = create_user(
-        email="member@example.com",
+    project = create_project(
+        client,
+        token,
     )
 
-    owner_token = get_token(owner.email)
-    member_token = get_token(member.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Test Project"},
+    task = create_task(
+        client,
+        token,
+        project["id"],
     )
-
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {owner_token}"},
-    )
-
-    assert add_response.status_code == 201
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Member Visible Task"},
-    )
-
-    assert create_response.status_code == 201
 
     response = client.get(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {member_token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
-    assert len(response.json()) == 1
+    assert response.json()[0]["id"] == task["id"]
 
 
-def test_list_tasks_as_admin(
-    client: TestClient,
+def test_manager_can_list_project_tasks_when_member(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    owner = create_manager(
+        create_user,
+        "owner@example.com",
     )
 
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(
+        create_user,
+        "manager@example.com",
     )
 
-    admin_token = get_token(admin.email)
-    owner_token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Owner Project"},
+    owner_token = get_token(
+        owner.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Admin Visible Task"},
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    assert create_response.status_code == 201
+    project = create_project(
+        client,
+        owner_token,
+    )
+
+    task = create_task(
+        client,
+        owner_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        owner_token,
+        project["id"],
+        manager.id,
+    )
 
     response = client.get(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(manager_token),
     )
 
     assert response.status_code == 200
-    assert len(response.json()) == 1
+    assert response.json()[0]["id"] == task["id"]
 
 
-def test_list_tasks_non_member_forbidden(
-    client: TestClient,
+def test_manager_cannot_list_unrelated_project_tasks(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager1 = create_manager(
+        create_user,
+        "manager1@example.com",
     )
 
-    other_user = create_user(
-        email="other@example.com",
+    manager2 = create_manager(
+        create_user,
+        "manager2@example.com",
     )
 
-    owner_token = get_token(owner.email)
-    other_token = get_token(other_user.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Private Project"},
+    token1 = get_token(
+        manager1.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
+    token2 = get_token(
+        manager2.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token2,
+    )
 
     response = client.get(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {other_token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token1),
     )
 
     assert response.status_code == 403
 
 
-# ============================================================
-# LIST TASKS FILTERING
-# ============================================================
-
-
-def test_list_tasks_filter_by_status(
-    client: TestClient,
+def test_member_can_list_project_tasks(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    member_token = get_token(
+        member.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
+    project = create_project(
+        client,
+        manager_token,
+    )
 
-    for title, task_status in [
-        ("Todo Task", "todo"),
-        ("Progress Task", "in_progress"),
-        ("Done Task", "done"),
-    ]:
-        response = client.post(
-            f"/projects/{project_id}/tasks",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "title": title,
-                "status": task_status,
-            },
-        )
-        assert response.status_code == 201
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
 
     response = client.get(
-        f"/projects/{project_id}/tasks?status=done",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(member_token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == task["id"]
+
+
+def test_member_cannot_list_unrelated_project_tasks(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    member_token = get_token(
+        member.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    response = client.get(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(member_token),
+    )
+
+    assert response.status_code == 403
+
+
+def test_list_tasks_project_not_found(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.get(
+        "/projects/99999/tasks",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 404
+
+
+def test_list_tasks_filters_by_status(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    create_task(
+        client,
+        token,
+        project["id"],
+        title="Todo",
+        task_status="todo",
+    )
+
+    create_task(
+        client,
+        token,
+        project["id"],
+        title="In Progress",
+        task_status="in_progress",
+    )
+
+    response = client.get(
+        f"/projects/{project['id']}/tasks?status=in_progress",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
@@ -660,62 +982,77 @@ def test_list_tasks_filter_by_status(
     data = response.json()
 
     assert len(data) == 1
-    assert data[0]["title"] == "Done Task"
-    assert data[0]["status"] == "done"
+    assert data[0]["title"] == "In Progress"
 
 
-def test_list_tasks_filter_by_assignee(
-    client: TestClient,
+def test_list_tasks_invalid_status_rejected(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    member = create_user(
-        email="member@example.com",
+    project = create_project(
+        client,
+        token,
     )
-
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert add_response.status_code == 201
-
-    response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "title": "Assigned Task",
-            "assignee_id": member.id,
-        },
-    )
-
-    assert response.status_code == 201
-
-    response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Unassigned Task"},
-    )
-
-    assert response.status_code == 201
 
     response = client.get(
-        f"/projects/{project_id}/tasks?assignee_id={member.id}",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks?status=invalid",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_tasks_filters_by_assignee(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
+
+    create_task(
+        client,
+        manager_token,
+        project["id"],
+        title="Assigned",
+        assignee_id=member.id,
+    )
+
+    create_task(
+        client,
+        manager_token,
+        project["id"],
+        title="Unassigned",
+    )
+
+    response = client.get(
+        f"/projects/{project['id']}/tasks?assignee_id={member.id}",
+        headers=auth_header(manager_token),
     )
 
     assert response.status_code == 200
@@ -723,105 +1060,88 @@ def test_list_tasks_filter_by_assignee(
     data = response.json()
 
     assert len(data) == 1
-    assert data[0]["title"] == "Assigned Task"
-    assert data[0]["assignee_id"] == member.id
-
-
-# ============================================================
-# TASK PAGINATION
-# ============================================================
+    assert data[0]["title"] == "Assigned"
 
 
 def test_list_tasks_pagination(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        token,
     )
 
-    project_id = project_response.json()["id"]
-
-    for number in range(1, 6):
-        response = client.post(
-            f"/projects/{project_id}/tasks",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"title": f"Task {number}"},
+    for index in range(5):
+        create_task(
+            client,
+            token,
+            project["id"],
+            title=f"Task {index}",
         )
-        assert response.status_code == 201
 
     response = client.get(
-        f"/projects/{project_id}/tasks?page=1&page_size=2",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks?page=1&page_size=2",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
-
-    data = response.json()
-
-    assert len(data) == 2
-    assert [task["title"] for task in data] == [
-        "Task 1",
-        "Task 2",
-    ]
-
-    response = client.get(
-        f"/projects/{project_id}/tasks?page=2&page_size=2",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-
-    data = response.json()
-
-    assert len(data) == 2
-    assert [task["title"] for task in data] == [
-        "Task 3",
-        "Task 4",
-    ]
+    assert len(response.json()) == 2
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        "?page=0",
-        "?page=-1",
-        "?page_size=0",
-        "?page_size=101",
-    ],
-)
-def test_list_tasks_invalid_pagination(
-    client: TestClient,
+def test_list_tasks_invalid_page_rejected(
+    client,
     create_user,
     get_token,
-    query,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        token,
     )
-
-    project_id = project_response.json()["id"]
 
     response = client.get(
-        f"/projects/{project_id}/tasks{query}",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/projects/{project['id']}/tasks?page=0",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_tasks_invalid_page_size_rejected(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    response = client.get(
+        f"/projects/{project['id']}/tasks?page_size=101",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 422
@@ -832,185 +1152,295 @@ def test_list_tasks_invalid_pagination(
 # ============================================================
 
 
-def test_get_task_as_owner(
-    client: TestClient,
+def test_get_task_requires_authentication(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        token,
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Test Task"},
+    task = create_task(
+        client,
+        token,
+        project["id"],
     )
-
-    task_id = create_response.json()["id"]
 
     response = client.get(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/tasks/{task['id']}",
     )
 
-    assert response.status_code == 200
-    assert response.json()["id"] == task_id
-    assert response.json()["title"] == "Test Task"
+    assert response.status_code == 401
 
 
-def test_get_task_as_member(
-    client: TestClient,
+def test_admin_can_get_any_task(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    admin = create_admin(create_user)
+    manager = create_manager(create_user)
+
+    admin_token = get_token(
+        admin.email,
+        "password123",
     )
 
-    member = create_user(
-        email="member@example.com",
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    owner_token = get_token(owner.email)
-    member_token = get_token(member.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        manager_token,
     )
 
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {owner_token}"},
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
     )
-
-    assert add_response.status_code == 201
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Member Task"},
-    )
-
-    task_id = create_response.json()["id"]
 
     response = client.get(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {member_token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(admin_token),
     )
 
     assert response.status_code == 200
 
 
-def test_get_task_as_admin(
-    client: TestClient,
+def test_manager_can_get_own_project_task(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    owner = create_user(
-        email="owner@example.com",
+    project = create_project(
+        client,
+        token,
     )
 
-    admin_token = get_token(admin.email)
-    owner_token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Owner Project"},
+    task = create_task(
+        client,
+        token,
+        project["id"],
     )
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Admin Task"},
-    )
-
-    task_id = create_response.json()["id"]
 
     response = client.get(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 200
 
 
-def test_get_task_non_member_forbidden(
-    client: TestClient,
+def test_manager_can_get_task_from_project_where_member(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    owner = create_manager(
+        create_user,
+        "owner@example.com",
     )
 
-    other_user = create_user(
-        email="other@example.com",
+    manager = create_manager(
+        create_user,
+        "manager@example.com",
     )
 
-    owner_token = get_token(owner.email)
-    other_token = get_token(other_user.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Private Project"},
+    owner_token = get_token(
+        owner.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Private Task"},
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    task_id = create_response.json()["id"]
+    project = create_project(
+        client,
+        owner_token,
+    )
+
+    task = create_task(
+        client,
+        owner_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        owner_token,
+        project["id"],
+        manager.id,
+    )
 
     response = client.get(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {other_token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(manager_token),
+    )
+
+    assert response.status_code == 200
+
+
+def test_manager_cannot_get_unrelated_task(
+    client,
+    create_user,
+    get_token,
+):
+    manager1 = create_manager(
+        create_user,
+        "manager1@example.com",
+    )
+
+    manager2 = create_manager(
+        create_user,
+        "manager2@example.com",
+    )
+
+    token1 = get_token(
+        manager1.email,
+        "password123",
+    )
+
+    token2 = get_token(
+        manager2.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token2,
+    )
+
+    task = create_task(
+        client,
+        token2,
+        project["id"],
+    )
+
+    response = client.get(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token1),
+    )
+
+    assert response.status_code == 403
+
+
+def test_member_can_get_task_from_project(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    member_token = get_token(
+        member.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
+
+    response = client.get(
+        f"/tasks/{task['id']}",
+        headers=auth_header(member_token),
+    )
+
+    assert response.status_code == 200
+
+
+def test_member_cannot_get_unrelated_task(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    member_token = get_token(
+        member.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    response = client.get(
+        f"/tasks/{task['id']}",
+        headers=auth_header(member_token),
     )
 
     assert response.status_code == 403
 
 
 def test_get_task_not_found(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    user = create_user(
-        email="user@example.com",
-    )
+    admin = create_admin(create_user)
 
-    token = get_token(user.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.get(
         "/tasks/99999",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
 
     assert response.status_code == 404
@@ -1022,42 +1452,76 @@ def test_get_task_not_found(
 # ============================================================
 
 
-def test_update_task_as_owner(
-    client: TestClient,
+def test_admin_can_update_any_task(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    admin = create_admin(create_user)
+    manager = create_manager(create_user)
+
+    admin_token = get_token(
+        admin.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
+    project = create_project(
+        client,
+        manager_token,
+    )
 
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(admin_token),
         json={
-            "title": "Original",
-            "description": "Original description",
+            "title": "Updated By Admin",
         },
     )
 
-    task_id = create_response.json()["id"]
+    assert response.status_code == 200
+    assert response.json()["title"] == "Updated By Admin"
+
+
+def test_manager_can_update_task_in_own_project(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+    )
 
     response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
         json={
             "title": "Updated",
-            "description": "Updated description",
+            "description": "Updated Description",
         },
     )
 
@@ -1066,527 +1530,705 @@ def test_update_task_as_owner(
     data = response.json()
 
     assert data["title"] == "Updated"
-    assert data["description"] == "Updated description"
+    assert data["description"] == "Updated Description"
 
 
-def test_update_task_as_admin(
-    client: TestClient,
+def test_manager_member_cannot_update_task(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    owner = create_manager(
+        create_user,
+        "owner@example.com",
     )
 
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(
+        create_user,
+        "manager@example.com",
     )
 
-    admin_token = get_token(admin.email)
-    owner_token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Owner Project"},
+    owner_token = get_token(
+        owner.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Original"},
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    task_id = create_response.json()["id"]
+    project = create_project(
+        client,
+        owner_token,
+    )
+
+    task = create_task(
+        client,
+        owner_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        owner_token,
+        project["id"],
+        manager.id,
+    )
 
     response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"title": "Updated By Admin"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["title"] == "Updated By Admin"
-
-
-def test_update_task_as_non_member_forbidden(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    other_user = create_user(
-        email="other@example.com",
-    )
-
-    owner_token = get_token(owner.email)
-    other_token = get_token(other_user.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Private Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Private Task"},
-    )
-
-    task_id = create_response.json()["id"]
-
-    response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {other_token}"},
-        json={"title": "Hacked"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(manager_token),
+        json={
+            "title": "Should Fail",
+        },
     )
 
     assert response.status_code == 403
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"title": ""},
-        {"title": "a" * 256},
-    ],
-)
-def test_update_task_invalid_title(
-    client: TestClient,
+def test_member_cannot_update_task(
+    client,
     create_user,
     get_token,
-    payload,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    member_token = get_token(
+        member.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Original"},
+    project = create_project(
+        client,
+        manager_token,
     )
 
-    task_id = create_response.json()["id"]
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
 
     response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        json=payload,
-    )
-
-    assert response.status_code == 422
-
-
-def test_update_task_null_title_rejected(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(email="owner@example.com")
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    assert project_response.status_code == 201
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Original"},
-    )
-
-    assert create_response.status_code == 201
-
-    task_id = create_response.json()["id"]
-
-    response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": None},
-    )
-
-    assert response.status_code == 422
-
-
-# ============================================================
-# UPDATE TASK ASSIGNEE
-# ============================================================
-
-
-def test_update_task_assignee(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    member = create_user(
-        email="member@example.com",
-    )
-
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert add_response.status_code == 201
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Task"},
-    )
-
-    task_id = create_response.json()["id"]
-
-    response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"assignee_id": member.id},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["assignee_id"] == member.id
-
-
-def test_update_task_assignee_to_non_member_fails(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    other_user = create_user(
-        email="other@example.com",
-    )
-
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Task"},
-    )
-
-    task_id = create_response.json()["id"]
-
-    response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"assignee_id": other_user.id},
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == (
-        "Assignee must be a member of the project"
-    )
-
-
-def test_update_task_assignee_to_nonexistent_user_fails(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Task"},
-    )
-
-    task_id = create_response.json()["id"]
-
-    response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"assignee_id": 99999},
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Assignee not found"
-
-
-def test_update_task_unassign(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    member = create_user(
-        email="member@example.com",
-    )
-
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert add_response.status_code == 201
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(member_token),
         json={
-            "title": "Assigned Task",
-            "assignee_id": member.id,
+            "title": "Should Fail",
         },
     )
 
-    task_id = create_response.json()["id"]
+    assert response.status_code == 403
+
+
+def test_update_task_not_found(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.patch(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"assignee_id": None},
+        "/tasks/99999",
+        headers=auth_header(token),
+        json={
+            "title": "Updated",
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_update_task_empty_title_rejected(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
+        json={
+            "title": "",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_update_task_title_too_long_rejected(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
+        json={
+            "title": "a" * 256,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_update_task_title_null_rejected(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
+        json={
+            "title": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_update_task_description_can_be_null(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+        description="Description",
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
+        json={
+            "description": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["description"] is None
+
+
+def test_update_task_assignee_can_be_cleared(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
+
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+        assignee_id=member.id,
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(manager_token),
+        json={
+            "assignee_id": None,
+        },
     )
 
     assert response.status_code == 200
     assert response.json()["assignee_id"] is None
 
 
-# ============================================================
-# UPDATE TASK STATUS
-# ============================================================
-
-
-@pytest.mark.parametrize(
-    "task_status",
-    [
-        "todo",
-        "in_progress",
-        "done",
-    ],
-)
-def test_update_task_status(
-    client: TestClient,
+def test_update_task_assignee_must_be_project_member(
+    client,
     create_user,
     get_token,
-    task_status,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+    other_user = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    project = create_project(
+        client,
+        manager_token,
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Task"},
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
     )
-
-    task_id = create_response.json()["id"]
 
     response = client.patch(
-        f"/tasks/{task_id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"status": task_status},
+        f"/tasks/{task['id']}",
+        headers=auth_header(manager_token),
+        json={
+            "assignee_id": other_user.id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Assignee must be a member of the project"
+    )
+
+
+def test_update_task_empty_payload_is_noop(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+        title="Original",
+        description="Original Description",
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
+        json={},
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == task_status
+
+    data = response.json()
+
+    assert data["title"] == "Original"
+    assert data["description"] == "Original Description"
 
 
-def test_update_task_status_invalid(
-    client: TestClient,
+# ============================================================
+# CHANGE TASK STATUS
+# ============================================================
+
+
+def test_admin_can_change_any_task_status(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    admin = create_admin(create_user)
+    manager = create_manager(create_user)
+
+    admin_token = get_token(
+        admin.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Task"},
+    project = create_project(
+        client,
+        manager_token,
     )
 
-    task_id = create_response.json()["id"]
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+        task_status="todo",
+    )
 
     response = client.patch(
-        f"/tasks/{task_id}/status",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"status": "invalid"},
-    )
-
-    assert response.status_code == 422
-
-
-def test_update_task_status_as_admin(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
-    )
-
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    admin_token = get_token(admin.email)
-    owner_token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Owner Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Task"},
-    )
-
-    task_id = create_response.json()["id"]
-
-    response = client.patch(
-        f"/tasks/{task_id}/status",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"status": "done"},
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(admin_token),
+        json={
+            "status": "done",
+        },
     )
 
     assert response.status_code == 200
     assert response.json()["status"] == "done"
 
 
-def test_update_task_status_non_member_forbidden(
-    client: TestClient,
+def test_manager_can_change_status_in_own_project(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    other_user = create_user(
-        email="other@example.com",
+    project = create_project(
+        client,
+        token,
     )
 
-    owner_token = get_token(owner.email)
-    other_token = get_token(other_user.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Private Project"},
+    task = create_task(
+        client,
+        token,
+        project["id"],
     )
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Private Task"},
-    )
-
-    task_id = create_response.json()["id"]
 
     response = client.patch(
-        f"/tasks/{task_id}/status",
-        headers={"Authorization": f"Bearer {other_token}"},
-        json={"status": "done"},
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(token),
+        json={
+            "status": "in_progress",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "in_progress"
+
+
+def test_manager_member_cannot_change_status(
+    client,
+    create_user,
+    get_token,
+):
+    owner = create_manager(
+        create_user,
+        "owner@example.com",
+    )
+
+    manager = create_manager(
+        create_user,
+        "manager@example.com",
+    )
+
+    owner_token = get_token(
+        owner.email,
+        "password123",
+    )
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        owner_token,
+    )
+
+    task = create_task(
+        client,
+        owner_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        owner_token,
+        project["id"],
+        manager.id,
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(manager_token),
+        json={
+            "status": "done",
+        },
     )
 
     assert response.status_code == 403
+
+
+def test_member_can_change_status(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    member_token = get_token(
+        member.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(member_token),
+        json={
+            "status": "done",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "done"
+
+
+def test_unrelated_member_cannot_change_status(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    member_token = get_token(
+        member.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(member_token),
+        json={
+            "status": "done",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_change_task_status_not_found(
+    client,
+    create_user,
+    get_token,
+):
+    admin = create_admin(create_user)
+
+    token = get_token(
+        admin.email,
+        "password123",
+    )
+
+    response = client.patch(
+        "/tasks/99999/status",
+        headers=auth_header(token),
+        json={
+            "status": "done",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+
+
+def test_change_task_status_invalid_status(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(token),
+        json={
+            "status": "invalid",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_change_task_status_missing_status(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(token),
+        json={},
+    )
+
+    assert response.status_code == 422
 
 
 # ============================================================
@@ -1594,192 +2236,350 @@ def test_update_task_status_non_member_forbidden(
 # ============================================================
 
 
-def test_delete_task_as_owner(
-    client: TestClient,
+def test_admin_can_delete_any_task(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    admin = create_admin(create_user)
+    manager = create_manager(create_user)
+
+    admin_token = get_token(
+        admin.email,
+        "password123",
     )
 
-    token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "Test Project"},
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"title": "Task To Delete"},
+    project = create_project(
+        client,
+        manager_token,
     )
 
-    task_id = create_response.json()["id"]
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
 
     response = client.delete(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 204
-    assert response.content == b""
-
-    response = client.get(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 404
-
-
-def test_delete_task_as_member(
-    client: TestClient,
-    create_user,
-    get_token,
-):
-    owner = create_user(
-        email="owner@example.com",
-    )
-
-    member = create_user(
-        email="member@example.com",
-    )
-
-    owner_token = get_token(owner.email)
-    member_token = get_token(member.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Test Project"},
-    )
-
-    project_id = project_response.json()["id"]
-
-    add_response = client.post(
-        f"/projects/{project_id}/members/{member.id}",
-        headers={"Authorization": f"Bearer {owner_token}"},
-    )
-
-    assert add_response.status_code == 201
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Task To Delete"},
-    )
-
-    task_id = create_response.json()["id"]
-
-    response = client.delete(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {member_token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(admin_token),
     )
 
     assert response.status_code == 204
 
 
-def test_delete_task_as_admin(
-    client: TestClient,
+def test_manager_can_delete_task_in_own_project(
+    client,
     create_user,
     get_token,
 ):
-    admin = create_user(
-        email="admin@example.com",
-        role="admin",
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
     )
 
-    owner = create_user(
-        email="owner@example.com",
+    project = create_project(
+        client,
+        token,
     )
 
-    admin_token = get_token(admin.email)
-    owner_token = get_token(owner.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Owner Project"},
+    task = create_task(
+        client,
+        token,
+        project["id"],
     )
-
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Admin Delete Task"},
-    )
-
-    task_id = create_response.json()["id"]
 
     response = client.delete(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
     )
 
     assert response.status_code == 204
 
 
-def test_delete_task_non_member_forbidden(
-    client: TestClient,
+def test_manager_member_cannot_delete_task(
+    client,
     create_user,
     get_token,
 ):
-    owner = create_user(
-        email="owner@example.com",
+    owner = create_manager(
+        create_user,
+        "owner@example.com",
     )
 
-    other_user = create_user(
-        email="other@example.com",
+    manager = create_manager(
+        create_user,
+        "manager@example.com",
     )
 
-    owner_token = get_token(owner.email)
-    other_token = get_token(other_user.email)
-
-    project_response = client.post(
-        "/projects",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"name": "Private Project"},
+    owner_token = get_token(
+        owner.email,
+        "password123",
     )
 
-    project_id = project_response.json()["id"]
-
-    create_response = client.post(
-        f"/projects/{project_id}/tasks",
-        headers={"Authorization": f"Bearer {owner_token}"},
-        json={"title": "Private Task"},
+    manager_token = get_token(
+        manager.email,
+        "password123",
     )
 
-    task_id = create_response.json()["id"]
+    project = create_project(
+        client,
+        owner_token,
+    )
+
+    task = create_task(
+        client,
+        owner_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        owner_token,
+        project["id"],
+        manager.id,
+    )
 
     response = client.delete(
-        f"/tasks/{task_id}",
-        headers={"Authorization": f"Bearer {other_token}"},
+        f"/tasks/{task['id']}",
+        headers=auth_header(manager_token),
+    )
+
+    assert response.status_code == 403
+
+
+def test_member_cannot_delete_task(
+    client,
+    create_user,
+    get_token,
+):
+    manager = create_manager(create_user)
+    member = create_member(create_user)
+
+    manager_token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    member_token = get_token(
+        member.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        manager_token,
+    )
+
+    task = create_task(
+        client,
+        manager_token,
+        project["id"],
+    )
+
+    add_project_member(
+        client,
+        manager_token,
+        project["id"],
+        member.id,
+    )
+
+    response = client.delete(
+        f"/tasks/{task['id']}",
+        headers=auth_header(member_token),
     )
 
     assert response.status_code == 403
 
 
 def test_delete_task_not_found(
-    client: TestClient,
+    client,
     create_user,
     get_token,
 ):
-    user = create_user(
-        email="user@example.com",
-    )
+    admin = create_admin(create_user)
 
-    token = get_token(user.email)
+    token = get_token(
+        admin.email,
+        "password123",
+    )
 
     response = client.delete(
         "/tasks/99999",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Task not found"
+
+
+# ============================================================
+# DATABASE CONSISTENCY
+# ============================================================
+
+
+def test_create_task_persists(
+    client,
+    create_user,
+    get_token,
+    db,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    response = client.post(
+        f"/projects/{project['id']}/tasks",
+        headers=auth_header(token),
+        json={
+            "title": "Persisted Task",
+        },
+    )
+
+    assert response.status_code == 201
+
+    task_id = response.json()["id"]
+
+    task = db.get(Task, task_id)
+
+    assert task is not None
+    assert task.title == "Persisted Task"
+    assert task.project_id == project["id"]
+    assert task.created_by == manager.id
+
+
+def test_delete_task_removes_from_database(
+    client,
+    create_user,
+    get_token,
+    db,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+    )
+
+    response = client.delete(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
+    )
+
+    assert response.status_code == 204
+
+    deleted_task = db.get(Task, task["id"])
+
+    assert deleted_task is None
+
+
+def test_update_task_persists(
+    client,
+    create_user,
+    get_token,
+    db,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+        title="Original",
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}",
+        headers=auth_header(token),
+        json={
+            "title": "Updated",
+        },
+    )
+
+    assert response.status_code == 200
+
+    db.expire_all()
+
+    updated_task = db.get(Task, task["id"])
+
+    assert updated_task is not None
+    assert updated_task.title == "Updated"
+
+
+def test_change_task_status_persists(
+    client,
+    create_user,
+    get_token,
+    db,
+):
+    manager = create_manager(create_user)
+
+    token = get_token(
+        manager.email,
+        "password123",
+    )
+
+    project = create_project(
+        client,
+        token,
+    )
+
+    task = create_task(
+        client,
+        token,
+        project["id"],
+        task_status="todo",
+    )
+
+    response = client.patch(
+        f"/tasks/{task['id']}/status",
+        headers=auth_header(token),
+        json={
+            "status": "done",
+        },
+    )
+
+    assert response.status_code == 200
+
+    db.expire_all()
+
+    updated_task = db.get(Task, task["id"])
+
+    assert updated_task is not None
+    assert updated_task.status == "done"

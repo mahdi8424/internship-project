@@ -4,13 +4,17 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
     require_project_member,
-    require_task_access,
+    require_project_owner,
+    require_task_manager,
+    require_task_status_changer,
+    require_task_viewer,
 )
 from app.db.models import Project, ProjectMember, Task, User
 from app.db.session import get_db
 from app.schemas import (
     TaskCreate,
     TaskResponse,
+    TaskStatus,
     TaskStatusUpdate,
     TaskUpdate,
 )
@@ -57,6 +61,13 @@ def validate_assignee(
         )
 
 
+# =========================================================
+# Create task
+# admin: any project
+# manager: own project
+# member: forbidden
+# =========================================================
+
 @project_tasks_router.post(
     "",
     response_model=TaskResponse,
@@ -65,7 +76,7 @@ def validate_assignee(
 def create_task(
     project_id: int,
     data: TaskCreate,
-    current_user: User = Depends(require_project_member),
+    current_user: User = Depends(require_project_owner),
     db: Session = Depends(get_db),
 ):
     project = db.get(Project, project_id)
@@ -98,23 +109,26 @@ def create_task(
     return task
 
 
+# =========================================================
+# List tasks
+# admin: any project
+# manager: own project or member
+# member: member only
+# =========================================================
+
 @project_tasks_router.get(
     "",
     response_model=list[TaskResponse],
 )
 def list_tasks(
     project_id: int,
-    status_filter: str | None = Query(
+    status_filter: TaskStatus | None = Query(
         default=None,
         alias="status",
     ),
     assignee_id: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(
-        default=20,
-        ge=1,
-        le=100,
-    ),
+    page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(require_project_member),
     db: Session = Depends(get_db),
 ):
@@ -150,13 +164,20 @@ def list_tasks(
     return db.scalars(query).all()
 
 
+# =========================================================
+# Get task
+# admin: any task
+# manager: own project or member
+# member: member only
+# =========================================================
+
 @tasks_router.get(
     "/{task_id}",
     response_model=TaskResponse,
 )
 def get_task(
     task_id: int,
-    current_user: User = Depends(require_task_access),
+    current_user: User = Depends(require_task_viewer),
     db: Session = Depends(get_db),
 ):
     task = db.get(Task, task_id)
@@ -170,6 +191,13 @@ def get_task(
     return task
 
 
+# =========================================================
+# Modify task
+# admin: any task
+# manager: own project
+# member: forbidden
+# =========================================================
+
 @tasks_router.patch(
     "/{task_id}",
     response_model=TaskResponse,
@@ -177,7 +205,7 @@ def get_task(
 def update_task(
     task_id: int,
     data: TaskUpdate,
-    current_user: User = Depends(require_task_access),
+    current_user: User = Depends(require_task_manager),
     db: Session = Depends(get_db),
 ):
     task = db.get(Task, task_id)
@@ -206,6 +234,13 @@ def update_task(
     return task
 
 
+# =========================================================
+# Change task status
+# admin: any task
+# manager: own project
+# member: member of project
+# =========================================================
+
 @tasks_router.patch(
     "/{task_id}/status",
     response_model=TaskResponse,
@@ -213,7 +248,7 @@ def update_task(
 def update_task_status(
     task_id: int,
     data: TaskStatusUpdate,
-    current_user: User = Depends(require_task_access),
+    current_user: User = Depends(require_task_status_changer),
     db: Session = Depends(get_db),
 ):
     task = db.get(Task, task_id)
@@ -232,13 +267,20 @@ def update_task_status(
     return task
 
 
+# =========================================================
+# Delete task
+# admin: any task
+# manager: own project
+# member: forbidden
+# =========================================================
+
 @tasks_router.delete(
     "/{task_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_task(
     task_id: int,
-    current_user: User = Depends(require_task_access),
+    current_user: User = Depends(require_task_manager),
     db: Session = Depends(get_db),
 ):
     task = db.get(Task, task_id)

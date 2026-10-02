@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
     get_current_user,
+    require_project_creator,
     require_project_member,
     require_project_owner,
 )
@@ -11,6 +12,7 @@ from app.db.models import Project, ProjectMember, User
 from app.db.session import get_db
 from app.schemas import (
     ProjectCreate,
+    ProjectMemberCreate,
     ProjectResponse,
     ProjectUpdate,
 )
@@ -21,6 +23,7 @@ router = APIRouter(
     tags=["projects"],
 )
 
+
 @router.post(
     "",
     response_model=ProjectResponse,
@@ -28,7 +31,7 @@ router = APIRouter(
 )
 def create_project(
     data: ProjectCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_project_creator),
     db: Session = Depends(get_db),
 ):
     project = Project(
@@ -43,28 +46,19 @@ def create_project(
 
     return project
 
+
 @router.get(
     "",
     response_model=list[ProjectResponse],
 )
 def list_projects(
-    page: int = Query(
-        default=1,
-        ge=1,
-    ),
-    page_size: int = Query(
-        default=20,
-        ge=1,
-        le=100,
-    ),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if current_user.role == "admin":
-        query = (
-            select(Project)
-            .order_by(Project.id)
-        )
+        query = select(Project).order_by(Project.id)
     else:
         owned_projects = select(Project.id).where(
             Project.owner_id == current_user.id
@@ -89,13 +83,12 @@ def list_projects(
             .order_by(Project.id)
         )
 
-    query = (
-        query
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
+    query = query.offset(
+        (page - 1) * page_size
+    ).limit(page_size)
 
     return db.scalars(query).all()
+
 
 @router.get(
     "/{project_id}",
@@ -116,10 +109,8 @@ def get_project(
 
     return project
 
-@router.patch(
-    "/{project_id}",
-    response_model=ProjectResponse,
-)
+
+@router.patch("/{project_id}", response_model=ProjectResponse)
 def update_project(
     project_id: int,
     data: ProjectUpdate,
@@ -134,16 +125,19 @@ def update_project(
             detail="Project not found",
         )
 
-    if data.name is not None:
-        project.name = data.name
+    updates = data.model_dump(exclude_unset=True)
 
-    if data.description is not None:
-        project.description = data.description
+    if "name" in updates and updates["name"] is not None:
+        project.name = updates["name"]
+
+    if "description" in updates:
+        project.description = updates["description"]
 
     db.commit()
     db.refresh(project)
 
     return project
+
 
 @router.delete(
     "/{project_id}",
@@ -165,13 +159,14 @@ def delete_project(
     db.delete(project)
     db.commit()
 
+
 @router.post(
-    "/{project_id}/members/{user_id}",
+    "/{project_id}/members",
     status_code=status.HTTP_201_CREATED,
 )
 def add_member(
     project_id: int,
-    user_id: int,
+    data: ProjectMemberCreate,
     current_user: User = Depends(require_project_owner),
     db: Session = Depends(get_db),
 ):
@@ -183,7 +178,7 @@ def add_member(
             detail="Project not found",
         )
 
-    user = db.get(User, user_id)
+    user = db.get(User, data.user_id)
 
     if user is None:
         raise HTTPException(
@@ -194,7 +189,7 @@ def add_member(
     existing = db.scalar(
         select(ProjectMember).where(
             ProjectMember.project_id == project_id,
-            ProjectMember.user_id == user_id,
+            ProjectMember.user_id == data.user_id,
         )
     )
 
@@ -206,7 +201,7 @@ def add_member(
 
     membership = ProjectMember(
         project_id=project_id,
-        user_id=user_id,
+        user_id=data.user_id,
     )
 
     db.add(membership)
@@ -215,6 +210,7 @@ def add_member(
     return {
         "message": "Member added successfully",
     }
+
 
 @router.delete(
     "/{project_id}/members/{user_id}",

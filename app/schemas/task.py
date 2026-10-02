@@ -8,11 +8,13 @@ TaskStatus = Literal["todo", "in_progress", "done"]
 
 
 class TaskCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=255)
+    title: str = Field(
+        min_length=1,
+        max_length=255,
+    )
     description: str | None = None
     status: TaskStatus = "todo"
     assignee_id: int | None = None
-
 
 
 class TaskUpdate(BaseModel):
@@ -21,9 +23,7 @@ class TaskUpdate(BaseModel):
         min_length=1,
         max_length=255,
     )
-
     description: str | None = None
-
     assignee_id: int | None = None
 
     @field_validator("title")
