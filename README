@@ -1,0 +1,1007 @@
+# Project Management API
+
+A REST API for project and task management with authentication, role-based access control, project ownership/membership authorization, JWT access tokens, refresh-token rotation, and automated tests.
+
+This project was developed as an internship assignment focused on **authentication, authorization, API design, code quality, and testing**.
+
+The implementation uses **FastAPI, SQLAlchemy, SQLite, Alembic, Pydantic, and JWT-based authentication**.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Technology Stack](#technology-stack)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Roles and Permissions](#roles-and-permissions)
+- [Authentication](#authentication)
+- [Authorization](#authorization)
+- [Database](#database)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Environment Variables](#environment-variables)
+- [Database Setup](#database-setup)
+- [Running the Application](#running-the-application)
+- [Running Tests](#running-tests)
+- [API Endpoints](#api-endpoints)
+- [Pagination and Filtering](#pagination-and-filtering)
+- [Authentication Examples](#authentication-examples)
+- [Important Design Decisions](#important-design-decisions)
+- [Security Considerations](#security-considerations)
+- [Error Handling](#error-handling)
+- [Limitations and Future Improvements](#limitations-and-future-improvements)
+- [Git History](#git-history)
+
+---
+
+## Overview
+
+The API implements a small project-management system in which users can create and access projects and tasks according to their role and relationship with the resource.
+
+There are three roles:
+
+| Role | Description |
+|---|---|
+| `admin` | System administrator with access to all resources and user-management capabilities |
+| `manager` | Can create projects, manage their own projects, add members, and manage tasks in their projects |
+| `member` | Can access projects they belong to and can change the status of tasks assigned to them |
+
+Newly registered users receive the `member` role by default.
+
+The API uses two levels of authorization:
+
+1. **Role-based access control (RBAC)** — determines whether a role is allowed to perform an operation.
+2. **Resource-level authorization** — determines whether the authenticated user has access to the specific project or task.
+
+This separation is important because having the correct role alone does not necessarily grant access to every resource.
+
+---
+
+## Features
+
+### Authentication
+
+- User registration
+- Login with email and password
+- Short-lived JWT access tokens
+- Long-lived refresh tokens
+- Refresh-token rotation
+- Refresh-token revocation
+- Logout
+- Current-user endpoint
+- Password change
+- Revocation of all refresh tokens after password change
+- Disabled users cannot authenticate or use previously issued access tokens
+
+### Authorization
+
+- Centralized authorization dependencies
+- Role-based access control
+- Project ownership checks
+- Project membership checks
+- Task access checks
+- Admin-only user management
+- Protection against administrators removing their own admin role
+- Protection against administrators disabling their own account
+- Task assignees must be members of the corresponding project
+
+### Projects
+
+- Create projects
+- List accessible projects
+- Retrieve a project
+- Update a project
+- Delete a project
+- Add project members
+- Remove project members
+- Pagination for project lists
+
+### Tasks
+
+- Create tasks
+- List project tasks
+- Filter tasks by status
+- Filter tasks by assignee
+- Pagination
+- Retrieve an individual task
+- Update task information
+- Update task status separately
+- Delete tasks
+
+### Users
+
+- Admin-only user listing
+- Pagination
+- Admin-only user retrieval
+- Admin-only role changes
+- Admin-only activation/deactivation
+
+### Testing
+
+The project contains automated tests covering authentication and authorization behavior, including successful and unsuccessful authentication, invalid/expired credentials, refresh-token rotation, and multiple access-control scenarios.
+
+---
+
+## Technology Stack
+
+- **Python 3.12**
+- **FastAPI**
+- **SQLAlchemy**
+- **Pydantic**
+- **SQLite**
+- **Alembic**
+- **JWT**
+- **Pytest**
+
+SQLite was selected as the database because the assignment explicitly allows database choice and SQLite provides a simple, self-contained setup suitable for this project.
+
+---
+
+## Architecture
+
+The project follows a layered structure separating API routes, schemas, business/authentication logic, authorization dependencies, and database models.
+
+The main layers are:
+
+```text
+HTTP Request
+     │
+     ▼
+FastAPI Routes
+     │
+     ├── Pydantic validation
+     │
+     ├── Authentication / Authorization dependencies
+     │
+     ▼
+Services / application logic
+     │
+     ▼
+SQLAlchemy
+     │
+     ▼
+SQLite
+```
+
+Authorization logic is centralized in `app/api/dependencies.py` rather than being duplicated throughout individual route handlers.
+
+---
+
+## Project Structure
+
+```text
+.
+├── alembic/
+│   ├── versions/
+│   ├── env.py
+│   └── script.py.mako
+│
+├── app/
+│   ├── api/
+│   │   ├── dependencies.py
+│   │   └── routes/
+│   │       ├── auth.py
+│   │       ├── projects.py
+│   │       ├── tasks.py
+│   │       └── users.py
+│   │
+│   ├── auth/
+│   │   ├── jwt.py
+│   │   ├── password.py
+│   │   └── refresh.py
+│   │
+│   ├── core/
+│   │   └── config.py
+│   │
+│   ├── db/
+│   │   ├── base.py
+│   │   ├── database.py
+│   │   ├── session.py
+│   │   └── models/
+│   │       ├── user.py
+│   │       ├── project.py
+│   │       ├── project_member.py
+│   │       ├── task.py
+│   │       └── refresh_token.py
+│   │
+│   ├── schemas/
+│   │   ├── auth.py
+│   │   ├── project.py
+│   │   ├── task.py
+│   │   └── user.py
+│   │
+│   ├── services/
+│   │   └── auth_service.py
+│   │
+│   └── main.py
+│
+├── tests/
+│   └── ...
+│
+├── .env.example
+├── .gitignore
+├── alembic.ini
+└── README.md
+```
+
+---
+
+## Roles and Permissions
+
+### Admin
+
+The administrator can:
+
+- View all users
+- Change user roles
+- Activate/deactivate users
+- Access all projects
+- Access all tasks
+
+An administrator cannot:
+
+- Remove their own `admin` role
+- Deactivate their own account
+
+This prevents the system from being left without an administrator.
+
+### Manager
+
+A manager can:
+
+- Create projects
+- View projects they own or belong to
+- Update their own projects
+- Delete their own projects
+- Add members to their projects
+- Remove members from their projects
+- Create tasks in their projects
+- Update/delete tasks in their projects
+- Change task status in their projects
+
+A manager cannot modify another manager's project.
+
+### Member
+
+A member can:
+
+- View projects they belong to
+- View tasks in projects they belong to
+- Change the status of tasks assigned to themselves
+
+A member cannot:
+
+- Create projects
+- Manage project membership
+- Modify arbitrary task information
+- Change the status of a task assigned to another user
+
+---
+
+## Authentication
+
+### Registration
+
+```http
+POST /auth/register
+```
+
+Example:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "password123",
+  "full_name": "Example User"
+}
+```
+
+New users receive the `member` role by default.
+
+### Login
+
+```http
+POST /auth/login
+```
+
+Example:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+```
+
+Successful authentication returns:
+
+```json
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "token_type": "bearer"
+}
+```
+
+The access token is used with:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+### Refresh
+
+```http
+POST /auth/refresh
+```
+
+A refresh token is exchanged for a new access/refresh token pair.
+
+The previous refresh token is revoked during rotation.
+
+### Logout
+
+```http
+POST /auth/logout
+```
+
+The supplied refresh token is revoked.
+
+### Current user
+
+```http
+GET /auth/me
+```
+
+Requires a valid access token.
+
+### Change password
+
+```http
+PUT /auth/me/password
+```
+
+Example:
+
+```json
+{
+  "current_password": "old-password",
+  "new_password": "new-password"
+}
+```
+
+The new password must contain between 8 and 128 characters.
+
+After a successful password change, all active refresh tokens belonging to the user are revoked.
+
+---
+
+## First Admin
+
+The assignment requires the first administrator to be created through a non-public mechanism rather than through the public registration endpoint.
+
+The public registration endpoint therefore always creates a `member`.
+
+**Project-specific first-admin setup:**  
+`[Document the exact seed/environment-variable command used by this project here.]`
+
+The important security property is that a normal user cannot register through `/auth/register` and obtain the `admin` role.
+
+---
+
+## Authorization
+
+Authorization is centralized in:
+
+```text
+app/api/dependencies.py
+```
+
+Important authorization dependencies include:
+
+```text
+get_current_user
+require_roles
+require_project_member
+require_project_owner
+require_task_access
+```
+
+For example:
+
+```text
+require_roles("admin")
+```
+
+restricts an endpoint to administrators.
+
+Resource-specific dependencies then verify ownership or membership.
+
+This avoids repeating authorization logic in every route handler.
+
+---
+
+## Database
+
+The project uses SQLite with SQLAlchemy.
+
+The database contains the following main entities:
+
+```text
+User
+Project
+ProjectMember
+Task
+RefreshToken
+LoginAttempt
+```
+
+### User
+
+```text
+id
+email
+password_hash
+full_name
+role
+is_active
+created_at
+```
+
+### User
+
+```text
+id
+email
+ip_address
+attempted_at
+```
+
+### Project
+
+```text
+id
+name
+description
+owner_id
+created_at
+```
+
+### ProjectMember
+
+```text
+project_id
+user_id
+```
+
+### Task
+
+```text
+id
+project_id
+title
+description
+status
+assignee_id
+created_by
+created_at
+updated_at
+```
+
+Supported task statuses:
+
+```text
+todo
+in_progress
+done
+```
+
+### RefreshToken
+
+Refresh tokens are stored as hashes rather than plaintext token values.
+
+---
+
+## Database Migrations
+
+Alembic is used for schema migrations.
+
+Apply all migrations with:
+
+```bash
+alembic upgrade head
+```
+
+Check the current migration:
+
+```bash
+alembic current
+```
+
+The SQLite database file is intentionally excluded from Git.
+
+A fresh database can therefore be created from the migration history instead of relying on a developer's local database file.
+
+---
+
+## Prerequisites
+
+- Python 3.12
+- Git
+- pip
+- A Unix-like shell or equivalent terminal
+
+Docker is not required for this implementation.
+
+---
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone <repository-url>
+cd <repository-directory>
+```
+
+Create a virtual environment:
+
+```bash
+python3.12 -m venv .venv
+```
+
+Activate it on Linux/macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Environment Variables
+
+Create the environment file from the example:
+
+```bash
+cp .env.example .env
+```
+
+The `.env` file contains environment-specific secrets and configuration.
+
+It must not be committed to Git.
+
+At minimum, secret configuration such as the JWT signing key should be supplied through environment variables rather than hard-coded into the source code.
+
+Example:
+
+```env
+DATABASE_URL=sqlite:///./app.db
+JWT_SECRET_KEY=change-this-secret
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
+```
+
+Use the actual variables present in `.env.example` as the authoritative configuration list.
+
+---
+
+## Running the Application
+
+Apply migrations:
+
+```bash
+alembic upgrade head
+```
+
+Start the development server:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+The API will be available at:
+
+```text
+http://127.0.0.1:8000
+```
+
+FastAPI's interactive OpenAPI documentation is available at:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+The ReDoc documentation is available at:
+
+```text
+http://127.0.0.1:8000/redoc
+```
+
+---
+
+## Running Tests
+
+Run the complete test suite with:
+
+```bash
+pytest -q
+```
+
+The test suite covers authentication and authorization behavior, including:
+
+- Registration
+- Successful login
+- Failed login
+- Missing/invalid authentication
+- Refresh-token rotation
+- Revocation of old refresh tokens
+- Project authorization
+- Task authorization
+- User-management authorization
+- Disabled-user behavior
+- Other required access-control scenarios
+
+---
+
+# API Endpoints
+
+## Authentication
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/auth/register` | Register a new member |
+| POST | `/auth/login` | Login and receive access/refresh tokens |
+| POST | `/auth/refresh` | Rotate refresh token and issue new tokens |
+| POST | `/auth/logout` | Revoke a refresh token |
+| GET | `/auth/me` | Get current authenticated user |
+| PUT | `/auth/me/password` | Change current user's password |
+
+## Users
+
+| Method | Endpoint | Access |
+|---|---|---|
+| GET | `/users` | Admin |
+| GET | `/users/{id}` | Admin / permitted user access |
+| PATCH | `/users/{id}/role` | Admin |
+| PATCH | `/users/{id}/status` | Admin |
+
+## Projects
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/projects` | Create a project |
+| GET | `/projects` | List accessible projects |
+| GET | `/projects/{id}` | Get a project |
+| PATCH | `/projects/{id}` | Update a project |
+| DELETE | `/projects/{id}` | Delete a project |
+| POST | `/projects/{id}/members` | Add a member |
+| DELETE | `/projects/{id}/members/{userId}` | Remove a member |
+
+## Tasks
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/projects/{id}/tasks` | Create a task |
+| GET | `/projects/{id}/tasks` | List project tasks |
+| GET | `/tasks/{id}` | Get a task |
+| PATCH | `/tasks/{id}` | Update task fields |
+| PATCH | `/tasks/{id}/status` | Update task status |
+| DELETE | `/tasks/{id}` | Delete a task |
+
+---
+
+## Pagination and Filtering
+
+List endpoints use page-based pagination.
+
+Example:
+
+```http
+GET /projects?page=1&page_size=20
+```
+
+For project tasks:
+
+```http
+GET /projects/1/tasks?page=1&page_size=20
+```
+
+Tasks can additionally be filtered by status:
+
+```http
+GET /projects/1/tasks?status=todo
+```
+
+or by assignee:
+
+```http
+GET /projects/1/tasks?assignee_id=5
+```
+
+Filters can be combined:
+
+```http
+GET /projects/1/tasks?status=in_progress&assignee_id=5&page=1&page_size=20
+```
+
+The default page size is 20 and the maximum page size is 100.
+
+---
+
+## Example Authenticated Request
+
+After logging in, use the access token in the `Authorization` header:
+
+```bash
+curl \
+  -H "Authorization: Bearer <access-token>" \
+  http://127.0.0.1:8000/auth/me
+```
+
+---
+
+## Example Project Creation
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8000/projects \
+  -H "Authorization: Bearer <access-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Internship Project",
+    "description": "Project created through the API"
+  }'
+```
+
+---
+
+## Example Task Creation
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8000/projects/1/tasks \
+  -H "Authorization: Bearer <access-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Implement authentication",
+    "description": "Implement JWT authentication and refresh tokens",
+    "status": "todo",
+    "assignee_id": 2
+  }'
+```
+
+An assignee must be a member of the corresponding project.
+
+---
+
+## Important Design Decisions
+
+### FastAPI
+
+FastAPI was selected because it provides:
+
+- Type-hint based request validation
+- Dependency injection
+- Automatic OpenAPI documentation
+- A clean structure for authentication and authorization dependencies
+- Good support for automated API testing
+
+### SQLite
+
+SQLite was selected because the assignment permits any database and SQLite provides a simple zero-configuration database for a small internship project.
+
+The database layer is nevertheless implemented through SQLAlchemy and Alembic, keeping persistence concerns separate from route logic.
+
+### SQLAlchemy
+
+SQLAlchemy provides the ORM and database abstraction.
+
+Database sessions are provided through the `get_db` dependency, ensuring that sessions are properly closed after requests.
+
+### JWT Access Tokens
+
+Access tokens are JWTs with an expiration time and a token type indicating that they are access tokens.
+
+The short lifetime limits the impact of a leaked access token.
+
+### Refresh Token Rotation
+
+Refresh tokens are stored as hashes in the database.
+
+When a refresh token is used:
+
+1. The supplied token is hashed.
+2. The hash is looked up in the database.
+3. Expiration and revocation are checked.
+4. The old refresh token is revoked.
+5. A new access token and refresh token are issued.
+
+This prevents a refresh token from being reused after successful rotation.
+
+### Password Changes
+
+After changing a password, all active refresh tokens belonging to the user are revoked.
+
+This forces existing long-lived sessions to authenticate again.
+
+### 401 vs 403
+
+`401 Unauthorized` is used when authentication is missing or invalid.
+
+`403 Forbidden` is used when the user is authenticated but does not have permission to perform the requested operation.
+
+For resource-level access, the application uses explicit `404` responses where appropriate to avoid exposing resources that the user cannot access.
+
+### Centralized Authorization
+
+Authorization logic is implemented through FastAPI dependencies instead of being repeatedly implemented inside route handlers.
+
+This makes authorization easier to test, review, and maintain.
+
+---
+
+## Security Considerations
+
+### Password Storage
+
+Passwords are never stored as plaintext.
+
+Only password hashes are stored in the database.
+
+### Refresh Tokens
+
+Refresh tokens are stored as hashes in the database rather than their original plaintext values.
+
+### Secrets
+
+Secrets such as JWT signing keys are loaded from environment variables.
+
+The real `.env` file is excluded from Git.
+
+Only `.env.example` is intended to be committed.
+
+### Disabled Users
+
+An inactive user cannot authenticate and previously issued access tokens are rejected when the current user is resolved.
+
+### Login Errors
+
+Authentication failures use a generic message rather than revealing whether a particular email address exists.
+
+### Assignee Validation
+
+A task cannot be assigned to a user who is not a member of the project.
+
+### Administrative Self-Protection
+
+An administrator cannot remove their own admin role or deactivate their own account.
+
+---
+
+## Error Handling
+
+The API uses appropriate HTTP status codes for common situations, including:
+
+```text
+200 OK
+201 Created
+204 No Content
+400 Bad Request
+401 Unauthorized
+403 Forbidden
+404 Not Found
+409 Conflict
+422 Unprocessable Entity
+```
+
+Examples:
+
+- Invalid credentials → `401`
+- Insufficient permissions → `403`
+- Missing resource → `404`
+- Duplicate email/member → `409`
+- Invalid request body → `422`
+
+---
+
+## Limitations and Future Improvements
+
+The core requirements of the internship assignment are implemented and tested.
+
+The assignment also lists several optional improvements. They were intentionally not prioritized because they are not required for the core implementation. These include:
+
+- Docker Compose
+- CI with GitHub Actions
+- Audit logging
+- Permission-based authorization instead of role checks
+- Soft deletion
+- TOTP two-factor authentication
+- Active-session management and logout from all devices
+
+These features could be added in a future iteration without changing the fundamental API architecture.
+
+Any project-specific limitation that remains should be documented here before submission rather than hidden.
+
+---
+
+## API Documentation
+
+FastAPI automatically generates OpenAPI documentation.
+
+After starting the application:
+
+```text
+Swagger UI:
+http://127.0.0.1:8000/docs
+
+ReDoc:
+http://127.0.0.1:8000/redoc
+```
+
+The Swagger UI can be used to inspect endpoints, request schemas, response schemas, authentication requirements, and execute API requests during development.
+
+---
+
+## Git History
+
+The project is maintained using Git with incremental commits rather than a single final commit.
+
+The commit history reflects the development stages of the project, including database setup, authentication, authorization, API implementation, route corrections, and testing.
+
+---
+
+## Final Verification
+
+Before submission, run:
+
+```bash
+pytest -q
+```
+
+Then verify the application starts successfully:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Verify the database can be recreated from migrations:
+
+```bash
+alembic upgrade head
+```
+
+Finally check:
+
+```bash
+git status
+```
+
+The real `.env` file, SQLite database, Python cache files, and virtual environment should not be committed.
+
+---
+
+## Assignment Notes
+
+This implementation prioritizes the core goals of the assignment:
+
+1. Correct authentication
+2. Correct role-based authorization
+3. Correct resource ownership/membership authorization
+4. Centralized access-control logic
+5. Secure token handling
+6. Input validation
+7. Automated testing
+8. Clear project structure
+9. Database migrations
+10. API documentation
+
+The implementation intentionally avoids adding unnecessary features that would increase complexity without contributing to the core requirements.
