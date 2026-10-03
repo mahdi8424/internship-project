@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -23,7 +23,11 @@ from app.schemas import (
     UserResponse,
 )
 from app.services.auth_service import authenticate_user, create_tokens
-
+from app.services.login_rate_limit import (
+    clear_login_attempts,
+    is_login_rate_limited,
+    record_failed_login,
+)
 
 router = APIRouter(
     prefix="/auth",
@@ -80,9 +84,26 @@ def register(
     response_model=TokenResponse,
 )
 def login(
+    request: Request,
     data: LoginRequest,
     db: Session = Depends(get_db),
 ):
+    ip_address = (
+        request.client.host
+        if request.client is not None
+        else "unknown"
+    )
+
+    if is_login_rate_limited(
+        db,
+        data.email,
+        ip_address,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please try again later.",
+        )
+
     user = authenticate_user(
         db,
         data.email,
@@ -90,10 +111,22 @@ def login(
     )
 
     if user is None:
+        record_failed_login(
+            db,
+            data.email,
+            ip_address,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+
+    clear_login_attempts(
+        db,
+        data.email,
+        ip_address,
+    )
 
     access_token, refresh_token = create_tokens(
         db,

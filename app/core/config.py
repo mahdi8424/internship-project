@@ -34,3 +34,16 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(
         "7",
     )
 )
+
+LOGIN_RATE_LIMIT = int(
+    os.getenv(
+        "LOGIN_RATE_LIMIT",
+        "5",
+    )
+)
+LOGIN_RATE_WINDOW_SECONDS = int(
+    os.getenv(
+        "LOGIN_RATE_WINDOW_SECONDS",
+        "60",
+    )
+)
