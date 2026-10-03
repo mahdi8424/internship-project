@@ -47,3 +47,17 @@ LOGIN_RATE_WINDOW_SECONDS = int(
         "60",
     )
 )
+
+ADMIN_EMAIL = os.getenv(
+        "ADMIN_EMAIL",
+        "admin@example.com",
+    )
+
+ADMIN_PASSWORD = os.getenv(
+        "ADMIN_PASSWORD",
+    )
+
+ADMIN_FULL_NAME = os.getenv(
+        "ADMIN_FULL_NAME",
+        "System Admin",
+    )

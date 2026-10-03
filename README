@@ -198,13 +198,15 @@ Authorization logic is centralized in `app/api/dependencies.py` rather than bein
 │   ├── db/
 │   │   ├── base.py
 │   │   ├── database.py
+│   │   ├── bootstrap.py
 │   │   ├── session.py
 │   │   └── models/
 │   │       ├── user.py
 │   │       ├── project.py
 │   │       ├── project_member.py
 │   │       ├── task.py
-│   │       └── refresh_token.py
+│   │       ├── refresh_token.py
+│   │       └── login_attempt.py
 │   │
 │   ├── schemas/
 │   │   ├── auth.py
@@ -213,7 +215,8 @@ Authorization logic is centralized in `app/api/dependencies.py` rather than bein
 │   │   └── user.py
 │   │
 │   ├── services/
-│   │   └── auth_service.py
+│   │   ├── auth_service.py
+|   |   └── login_rate_limit.py
 │   │
 │   └── main.py
 │
@@ -588,6 +591,11 @@ JWT_SECRET_KEY=change-this-secret
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=15
 REFRESH_TOKEN_EXPIRE_DAYS=7
+LOGIN_RATE_LIMIT = 5
+LOGIN_RATE_WINDOW_SECONDS = 60
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=change-this-password
+ADMIN_FULL_NAME=System Admin
 ```
 
 Use the actual variables present in `.env.example` as the authoritative configuration list.
